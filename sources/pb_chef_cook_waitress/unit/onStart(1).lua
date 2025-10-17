@@ -1,7 +1,7 @@
 -- PB_CHEF_LINECOOK_Waitress.LUA
 ---- (1) ----
 unit.hideWidget()
-chef_linecook_version = "1.2.3g"
+chef_linecook_version = "1.2.3h"
 
 function adjustIndustryName(text)
     text = text:lower()
@@ -25,7 +25,7 @@ function getStack(industryname)
             if databank.hasKey(ikey) == 1 then
                 local itemid = databank.getStringValue(ikey)
                 if added[itemid] ~= true then
-                    system.print("adding need to stack: " .. itemid)
+                    if not (suppress_debug == 1) then system.print("adding need to stack: " .. itemid) end
 
                     local item = requirements[mfloor(tonumber(itemid))]
                     if item then
@@ -82,6 +82,14 @@ functions.slot7 = function() doIndustry(slot7, functions.slot7) end
 functions.slot8 = function() doIndustry(slot8, functions.slot8) end
 functions.slot9 = function() doIndustry(slot9, functions.slot9) end
 functions.slot10 = function() doIndustry(slot10, functions.slot10) end
+functions.slot11 = function() doIndustry(slot11, functions.slot11) end
+functions.slot12 = function() doIndustry(slot12, functions.slot12) end
+functions.slot13 = function() doIndustry(slot13, functions.slot13) end
+functions.slot14 = function() doIndustry(slot14, functions.slot14) end
+functions.slot15 = function() doIndustry(slot15, functions.slot15) end
+functions.slot16 = function() doIndustry(slot16, functions.slot16) end
+functions.slot17 = function() doIndustry(slot17, functions.slot17) end
+functions.slot18 = function() doIndustry(slot18, functions.slot18) end
 
 cook_check = 0
 function doIndustry(slot, f)
@@ -110,7 +118,7 @@ function checkCooking(slot, industry, f)
         outputs = slot.getOutputs()
         if outputs and outputs[1] then
             cooking[outputs[1].id] = true
-            --- system.print(industryname .. " cooking " .. getName(outputs[1].id))
+            if not (suppress_debug == 1) then system.print(industryname .. " cooking " .. getName(outputs[1].id)) end
             if isATransferUnit(industryname) then setKnown(outputs[1].id, industry.name) end
 
             -- make sure we're not cooking too many, sometimes a bug will put in way too many
@@ -137,7 +145,8 @@ function doBuild(slot, industry, f)
     end
     stack = stacks[industryname]
 
-    -- system.print("Checking industry for " .. industryname .. " with stack size " .. stack.size .. " state: " .. state)
+    if not (suppress_debug == 1) then system.print("Checking industry for " ..
+        industryname .. " with stack size " .. stack.size .. " state: " .. state) end
 
     while state ~= IndustryStatus.running and skip == false and stack.size > 0 do
         if state == IndustryStatus.no_schemas
@@ -154,16 +163,18 @@ function doBuild(slot, industry, f)
         end -- do not interfere with large transfers industry
 
         if skip then
-            system.print(">>> Skipping " .. industryname .. " with state " .. state)
+            if not (suppress_debug == 1) then system.print(">>> Skipping " .. industryname .. " with state " .. state) end
             return
         end
 
         local item = stack.pop()
         if item ~= nil then
-            system.print("+++ checking " .. industryname .. " with state " .. state)
+            if not (suppress_debug == 1) then system.print("+++ checking " .. industryname .. " with state " .. state) end
             if state ~= IndustryStatus.idle then -- no need to stop idle industry
-                system.print("--- stopping " ..
-                    industryname .. " with state running:" .. tostring(state == IndustryStatus.running))
+                if not (suppress_debug == 1) then
+                    system.print("--- stopping " ..
+                        industryname .. " with state running:" .. tostring(state == IndustryStatus.running))
+                end
                 y(f)
                 slot.stop(false, false)
             end
@@ -177,10 +188,11 @@ function doBuild(slot, industry, f)
             if outputs and outputs[1] and outputs[1].id == item.id then
                 y(f)
                 local toMaintain = mceil(item.quantity * maintainMultiplier) -- NB "even if the transfer unit is drowning do not pass it a float" -- BBDarth
-                system.print(industryname .. " toMaintain " .. toMaintain)
+                if not (suppress_debug == 1) then system.print(industryname .. " toMaintain " .. toMaintain) end
 
                 slot.startMaintain(toMaintain)
-                system.print(industryname .. " maintaining " .. getName(item.id) .. " x" .. toMaintain)
+                if not (suppress_debug == 1) then system.print(industryname ..
+                    " maintaining " .. getName(item.id) .. " x" .. toMaintain) end
 
                 setKnown(industryname, item.id)
                 -- get the new status, e.g. do we need schematics?
@@ -223,7 +235,7 @@ function addNeed(item)
     end
     if needcount <= 30 then
         databank.setStringValue("needed" .. needcount, item.id)
-        system.print(needcount .. " Need: " .. item.id)
+        if not (suppress_debug == 1) then system.print(needcount .. " Need: " .. item.id) end
         needs_added[item.id] = true
     end
 end
@@ -295,7 +307,14 @@ end
 
 databank.setStringValue(unitname .. "_version", chef_linecook_version)
 databank.setStringValue("status:" .. unitname, "active")
-out("INFO: ", unitname, " is alive as type [", unitkey, "]")
+if not (suppress_debug == 1) then out("INFO: ", unitname, " is alive as type [", unitkey, "]") end
+
+suppress_debug = math.max(0, databank.getIntValue("suppress_debug"))
+if suppress_debug then
+    out("Debug is set OFF.")
+else
+    out("Debug is set ON.")
+end
 
 local raw = databank.getStringValue(unitkey)
 if raw == "" then
@@ -322,14 +341,16 @@ for _, item in pairs(items) do
         tu_quantity = mceil(tu_quantity / num_lines)
         if (tu_quantity > 0) then
             if tu_quantity > item.quantity then
-                system.print("Transfer Unit upgrading " ..
-                    getName(item.id) .. " from " .. item.quantity .. " to " .. tu_quantity)
+                if suppress_debug then
+                    system.print("Transfer Unit upgrading " ..
+                        getName(item.id) .. " from " .. item.quantity .. " to " .. tu_quantity)
+                end
                 item.quantity = tu_quantity
             else
                 if (item.quantity % tu_quantity) then
-                    out("tu_quantity fix:", tu_quantity)
+                    if not (suppress_debug == 1) then out("tu_quantity fix:", tu_quantity) end
                     local fix_factor = mceil(item.quantity / tu_quantity)
-                    item.quantity = fix_factor * tu_quantity
+                    if not (suppress_debug == 1) then item.quantity = fix_factor * tu_quantity end
                     out("new item.quantity:", item.quantity)
                 end
             end
@@ -347,7 +368,7 @@ for _, item in pairs(items) do
 
     requirements[item.id] = item
     count = count + 1
-    system.print(getName(item.id) .. " x" .. item.quantity)
+    if not (suppress_debug == 1) then system.print(getName(item.id) .. " x" .. item.quantity) end
 end
 if count == 0 then
     system.print("0 items to build - exiting")
@@ -361,7 +382,7 @@ if unitkey == "waitress" then
 end
 
 local tickRatio = mceil((2.37 / 3.0) * 100) / 100
-local wide_load = math.max(0, (machine_count - 40)/2)
+local wide_load = math.max(0, (machine_count - 40) / 2)
 local nextTickSeconds = tickRatio * (num_lines + wide_load)
 unit.setTimer("next", nextTickSeconds)
 unit.setTimer("ping", 5)
