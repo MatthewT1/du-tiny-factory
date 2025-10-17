@@ -1,6 +1,6 @@
 ---- (1) ----
 unit.hideWidget()
-screen_version = "1.2.3a"
+screen_version = "1.2.3b"
 
 functions = {}
 functions.iterate = function()
@@ -132,6 +132,8 @@ functions.iterate = function()
     header_block = manager_version .. eol .. num_lines .. eol .. feed_multiplier .. eol
     header_block = header_block .. line_multiplier .. eol .. #unSorted .. eol
     header_block = header_block .. factory_desc .. eol
+
+    databank.setIntValue("machine_count", #unSorted)
 
     output = header_block
     message_size_left = 1024 - #header_block

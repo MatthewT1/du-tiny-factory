@@ -306,6 +306,7 @@ end
 feed_multiplier = math.max(1.0, databank.getFloatValue("feed_multiplier"))
 line_multiplier = math.max(1.0, databank.getFloatValue("line_multiplier"))
 num_lines = math.max(1, databank.getIntValue("num_lines"))
+machine_count = math.max(1, databank.getIntValue("machine_count"))
 
 if num_lines <= 0 then
     num_lines = 1
@@ -360,7 +361,8 @@ if unitkey == "waitress" then
 end
 
 local tickRatio = mceil((2.37 / 3.0) * 100) / 100
-local nextTickSeconds = tickRatio * num_lines
+local wide_load = math.max(0, (machine_count - 40)/2)
+local nextTickSeconds = tickRatio * (num_lines + wide_load)
 unit.setTimer("next", nextTickSeconds)
 unit.setTimer("ping", 5)
 
