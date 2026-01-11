@@ -2,7 +2,7 @@
 
 ## Current Version
 
-"1.2.3"
+"1.2.3b"
 
 ## Explanation / Reasoning
 
@@ -123,6 +123,7 @@ An "-RC" indicates a "release candidate" and *should* be safe to use in producti
 
 ## History
 
+* v1.2.3b - (unreleased) Improvements to "chatty reduction" including addition of `suppress_debug  = 1` option to Customer board
 * v1.2.3 - (unreleased) Improvements to "large feed lots" handling, fixes to crashed board auto-restart, documentation.
 * v1.2.2 - (22apr2024) Includes fixes for some honeycomb and lumi glass not being produced due to shortages, and moving most user-config items into 'customer'
 * v1.2.1 - Fork of original code by <https://github.com/MichelV69> (DU: PE902Gaming). Include changes for screen display priority.
