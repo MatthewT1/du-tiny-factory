@@ -347,7 +347,7 @@ for _, item in pairs(items) do
                 end
                 item.quantity = tu_quantity
             else
-                if (item.quantity % tu_quantity) then
+                if (item.quantity % tu_quantity) ~= 0 then -- fix: 0 is true in Lua, so the old test was always true
                     if not (suppress_debug == 1) then out("tu_quantity fix:", tu_quantity) end
                     local fix_factor = mceil(item.quantity / tu_quantity)
                     if not (suppress_debug == 1) then item.quantity = fix_factor * tu_quantity end
