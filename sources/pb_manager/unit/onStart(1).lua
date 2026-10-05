@@ -3,6 +3,7 @@ unit.hideWidget()
 manager_version       = "1.2.3f"
 
 items                 = {}
+industries            = {} -- fix: was never created, so `table.insert(industries, ...)` crashed if an industry is linked to the manager
 line_mins             = {}
 line_mins[2240749601] = 300   -- pure aluminum
 line_mins[159858782]  = 300   -- pure carbon
