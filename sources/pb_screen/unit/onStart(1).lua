@@ -20,7 +20,8 @@ functions.iterate = function()
                 local maintain = 0
                 local itemname = getName(itemId, false)
                 local state = info.state
-                system.print(state .. " - " .. itemname)
+                -- fix: one chat line per machine on every redraw is a lot of work and chat spam (the screen redraws every second); kept as a comment for debugging
+                -- system.print(state .. " - " .. itemname)
 
                 if false and state ~= UNIT_WORKING and (manager_items[itemId] == nil and manager_items["" .. itemID] == nil) and (linecook_items[itemId] == nil and linecook_items["" .. itemId] == nil) then
                     -- this machine is doing nothing that we care about, so ignore it
@@ -149,7 +150,7 @@ functions.iterate = function()
     if output == "" then output = " ... pending ... " end
     screen.activate()
     screen.setScriptInput(output)
-    system.print("output set")
+    -- system.print("output set") -- fix: printed on every redraw
 end
 
 lines = {}
