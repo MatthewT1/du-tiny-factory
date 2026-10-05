@@ -39,13 +39,6 @@ function newStack()
     return o
 end
 
-function shuffle(tbl)
-  for i = #tbl, 2, -1 do
-    local j = mrandom(i)
-    tbl[i], tbl[j] = tbl[j], tbl[i]
-  end
-  return tbl
-end
 mfloor   = math.floor
 mceil    = math.ceil
 mmin     = math.min
@@ -72,10 +65,13 @@ function newStack()
     return o
 end
 
-function shuffle(tbl)
-    for i = #tbl, 2, -1 do
+-- fix: getStack() passes a stack object (entries + size), for which #tbl is 0, so nothing was ever shuffled.
+-- Shuffle the entries of the stack (or a plain array if one is passed).
+function shuffle(t)
+    local arr = t.entries or t
+    for i = #arr, 2, -1 do
         local j = mrandom(i)
-        tbl[i], tbl[j] = tbl[j], tbl[i]
+        arr[i], arr[j] = arr[j], arr[i]
     end
-    return tbl
+    return t
 end
