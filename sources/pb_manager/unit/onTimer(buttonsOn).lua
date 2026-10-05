@@ -1,6 +1,6 @@
 for name, switch in pairs(buttons) do
     if switch.isActive() == false then
-        while switch.isActive() == false do switch.activate() end
+        switch.activate() -- fix: one try per tick; a while loop here spins forever if the switch only changes state after the tick
         return
     end
 end
