@@ -4,20 +4,28 @@ manager_version       = "1.2.3f"
 
 items                 = {}
 line_mins             = {}
-line_mins[2240749601] = 300   -- pure aluminum
-line_mins[159858782]  = 300   -- pure carbon
-line_mins[198782496]  = 300   -- pure iron
-line_mins[2589986891] = 300   -- pure silicon
+line_mins[2240749601] = 400   -- pure aluminum
+line_mins[159858782]  = 400   -- pure carbon
+line_mins[198782496]  = 400   -- pure iron
+line_mins[2589986891] = 400   -- pure silicon
 
-line_mins[2112763718] = 200   -- pure calcium
-line_mins[2147954574] = 200   -- pure chromium
-line_mins[1466453887] = 200   -- pure copper
-line_mins[3603734543] = 200   -- pure sodium
+line_mins[2112763718] = 300   -- pure calcium
+line_mins[2147954574] = 300   -- pure chromium
+line_mins[1466453887] = 300   -- pure copper
+line_mins[3603734543] = 300   -- pure sodium
 
-line_mins[3810111622] = 100   -- pure lithium
-line_mins[3012303017] = 100   -- pure nickel
-line_mins[1807690770] = 100   -- pure silver
-line_mins[3822811562] = 100   -- pure sulfur
+line_mins[3810111622] = 200   -- pure lithium
+line_mins[3012303017] = 200   -- pure nickel
+line_mins[1807690770] = 200   -- pure silver
+line_mins[3822811562] = 200   -- pure sulfur
+
+line_mins[2565702107] = 100   -- Silumin product
+line_mins[231758472]  = 100   -- Duralumin product
+line_mins[3936127019] = 100   -- Basic screw
+line_mins[3936127018] = 100   -- Uncommon screw
+line_mins[18262914]   = 100   -- Al-Fe alloy product
+line_mins[1799107246] = 50    -- Basic pipe
+line_mins[1799107247] = 50    -- Uncommon pipe
 
 dont_assign           = {     -- list of raw minerals, these can't be produced, so they need to be ignored
     299255727,                -- coal
