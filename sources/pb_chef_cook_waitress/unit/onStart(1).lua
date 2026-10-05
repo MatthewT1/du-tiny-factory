@@ -170,7 +170,7 @@ function doBuild(slot, industry, f)
         local item = stack.pop()
         if item ~= nil then
             if not (suppress_debug == 1) then system.print("+++ checking " .. industryname .. " with state " .. state) end
-            if state ~= IndustryStatus.idle then -- no need to stop idle industry
+            if state ~= IndustryStatus.stopped then -- no need to stop idle industry (fix: IndustryStatus.idle does not exist, so this was always true)
                 if not (suppress_debug == 1) then
                     system.print("--- stopping " ..
                         industryname .. " with state running:" .. tostring(state == IndustryStatus.running))
