@@ -61,7 +61,8 @@ function checkForOverproducing(slot, info)
             maintain = mceil(info.maintainProductAmount)
         end
 
-        if itemId and requirements[itemId] and maintain > (maintainMultiplier * requirements[itemId].quantity) then
+        -- fix: `maintain` is rounded up, so compare it with the rounded-up target that doBuild sets (toMaintain), not the raw product
+        if itemId and requirements[itemId] and maintain > mceil(maintainMultiplier * requirements[itemId].quantity) then
             slot.stop(false, false)
         elseif itemId == nil or requirements[itemId] == nil then
             slot.stop(false, false)
