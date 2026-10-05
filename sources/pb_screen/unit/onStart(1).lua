@@ -205,5 +205,5 @@ end; function nestco:_init() for c, d in pairs(self.functions) do self.coroutine
 end
 
 NestCo = nestco:new(functions)
-unit.setTimer("update", 1)
+unit.setTimer("update", 3) -- tweak: was 1; each redraw queries every element of the construct and rebuilds the table, which lags the game on a big build
 -- do not chang the above
