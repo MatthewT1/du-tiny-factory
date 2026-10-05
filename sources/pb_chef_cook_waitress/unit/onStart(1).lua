@@ -119,7 +119,7 @@ function checkCooking(slot, industry, f)
         if outputs and outputs[1] then
             cooking[outputs[1].id] = true
             if not (suppress_debug == 1) then system.print(industryname .. " cooking " .. getName(outputs[1].id)) end
-            if isATransferUnit(industryname) then setKnown(outputs[1].id, industry.name) end
+            if isNotATransferUnit(industryname) then setKnown(industry.name, outputs[1].id) end -- fix: condition was inverted and the arguments swapped
 
             -- make sure we're not cooking too many, sometimes a bug will put in way too many
         end
