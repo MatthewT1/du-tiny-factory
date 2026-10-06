@@ -1,4 +1,12 @@
 ---- (1) ----
+-- tweak: garbage collector settings. With Lua's defaults the collector waits until a board's heap has doubled
+-- before it cleans up, so every board carries a pile of garbage. All programming boards of a player share one
+-- script-memory pool, and when the pool is full the game stops the board with the biggest heap (usually the chef,
+-- which then restarts and dies again). pause 100 = start the next cleaning cycle as soon as the last one ends;
+-- step 400 = clean in bigger steps. pcall: if the game ever refuses these options, the board still starts.
+-- Not used on the screen board: it rebuilds a large table every update, and there this setting made the game lag.
+pcall(collectgarbage, "incremental", 100, 400)
+
 local concat  = table.concat
 local sFormat = string.format
 
