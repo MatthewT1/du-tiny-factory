@@ -72,33 +72,23 @@ end
 complete = 0
 functions = {}
 
-functions.slot1 = function() doIndustry(slot1, functions.slot1) end
-functions.slot2 = function() doIndustry(slot2, functions.slot2) end
-functions.slot3 = function() doIndustry(slot3, functions.slot3) end
-functions.slot4 = function() doIndustry(slot4, functions.slot4) end
-functions.slot5 = function() doIndustry(slot5, functions.slot5) end
-functions.slot6 = function() doIndustry(slot6, functions.slot6) end
-functions.slot7 = function() doIndustry(slot7, functions.slot7) end
-functions.slot8 = function() doIndustry(slot8, functions.slot8) end
-functions.slot9 = function() doIndustry(slot9, functions.slot9) end
-functions.slot10 = function() doIndustry(slot10, functions.slot10) end
-functions.slot11 = function() doIndustry(slot11, functions.slot11) end
-functions.slot12 = function() doIndustry(slot12, functions.slot12) end
-functions.slot13 = function() doIndustry(slot13, functions.slot13) end
-functions.slot14 = function() doIndustry(slot14, functions.slot14) end
-functions.slot15 = function() doIndustry(slot15, functions.slot15) end
-functions.slot16 = function() doIndustry(slot16, functions.slot16) end
-functions.slot17 = function() doIndustry(slot17, functions.slot17) end
-functions.slot18 = function() doIndustry(slot18, functions.slot18) end
+-- fix: one scheduler entry per linked machine, whatever its slot number.
+-- Before: exactly 18 hand-written entries (functions.slot1 .. functions.slot18), so a machine linked to slot 19 or
+-- higher was never driven: on a board with the databank in slot 1 and 19 machines, the last two never got a job.
+-- The entries are now created further down, after the machines are discovered (search for cook_total).
 
 cook_check = 0
+cook_total = 0 -- fix: number of linked machines, set after discovery; the start-up wait below waits for all of them
 function doIndustry(slot, f)
     if slot and slot.getLocalId and industries[slot.getLocalId()] then
         local industry = industries[slot.getLocalId()]
         local state = checkCooking(slot, industry, f)
 
         cook_check = cook_check + 1
-        while cook_check < 10 do y(f) end -- wait for everyone do be done
+        -- fix: wait for every linked machine (cook_total) instead of a fixed 10. The old count included the empty
+        -- slots among the 18 entries, so 10 was always reached; now only linked machines run this code, and a board
+        -- with fewer than 10 machines would wait here forever.
+        while cook_check < cook_total do y(f) end -- wait for everyone do be done
 
         if state ~= IndustryStatus.running then doBuild(slot, industry, f) end
     else
@@ -300,6 +290,16 @@ end
 
 unitname = unit.getName():lower()
 unitkey  = unitname:gsub("%d$", "")
+
+-- fix: create one scheduler entry per discovered machine (see the note at `functions = {}`), and count them for
+-- the start-up wait in doIndustry.
+for id, industry in pairs(industries) do
+    local machine = industry.slot
+    local fn
+    fn = function() doIndustry(machine, fn) end
+    functions["machine" .. id] = fn
+    cook_total = cook_total + 1
+end
 
 for id, industry in pairs(industries) do
     databank.setStringValue("slot" .. industry.id, unitName)
