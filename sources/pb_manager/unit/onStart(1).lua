@@ -57,6 +57,16 @@ dont_assign           = {     -- list of raw minerals, these can't be produced, 
 
 ignore_list           = {} -- will be populated by the dont_assign list
 
+-- fix: RESTART BACKOFF for the watchdog below.
+-- Before: a board whose ping went stale was switched off by next(), and buttonsOn switched it straight back on
+-- within seconds, every time. A board that dies during its own start-up (for example from a script memory
+-- overload) then restarts over and over, and every restart is another burst of memory that can push the next board
+-- over the limit. Now the 1st failure in a row keeps the board off for 30 s, the 2nd for 60 s, the 3rd and later for
+-- 120 s. A board counts as healthy again (failures forgotten) once its ping is fresh 120 s after its last hold ended.
+--   restart_fails[name] = failures in a row;  hold_until[name] = buttonsOn leaves the board off until this time.
+restart_fails = {}
+hold_until = {}
+
 function next()
     currentTime = math.floor(system.getArkTime())
     -- tweak: publish the manager's Lua heap size in KB as mem:manager (the other boards write mem:<name> on ping)
@@ -69,6 +79,13 @@ function next()
         out(">>> lastPing: [", lastPing, "]")
         if isStillActive(currentTime, lastPing) then
             out(name, " is still running")
+            -- fix: fresh ping and well past its last hold: the board is healthy again, forget its failures
+            if hold_until[name] and (currentTime - hold_until[name]) > 120 then
+                restart_fails[name] = nil
+                hold_until[name] = nil
+            end
+        elseif not slot.isActive() then
+            -- fix: already switched off (e.g. waiting out its hold): nothing to reset and no new failure to count
         else
             out(name, " is overdue for ping.  Trying to reset.")
             slot.deactivate()
@@ -78,6 +95,9 @@ function next()
                 resetAttempts = resetAttempts + 1
             end
             databank.clearValue("status:" .. name)
+            -- fix: count the failure and hold the board off for 30, 60, then 120 s (see restart_fails above)
+            restart_fails[name] = (restart_fails[name] or 0) + 1
+            hold_until[name] = currentTime + math.min(30 * 2 ^ (restart_fails[name] - 1), 120)
         end
     end
 end --- function next()
