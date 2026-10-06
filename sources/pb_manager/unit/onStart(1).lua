@@ -59,6 +59,8 @@ ignore_list           = {} -- will be populated by the dont_assign list
 
 function next()
     currentTime = math.floor(system.getArkTime())
+    -- tweak: publish the manager's Lua heap size in KB as mem:manager (the other boards write mem:<name> on ping)
+    databank.setIntValue("mem:manager", math.floor(collectgarbage("count")))
 
     out("status checking at timestamp: [", currentTime, "]")
 
@@ -203,5 +205,15 @@ saveTable("waitress", ingredients)
 ingredients = getIngredients(ingredients, ingredients, true)
 saveTable("linecook", ingredients)
 
+-- tweak: the three tables are saved; from here on the manager only runs the watchdog (buttons, databank, out).
+-- Drop the start-up working data so the collector can free it (it used to stay in memory for good).
+-- If a later change makes the timers use one of these, take it off this list.
+builds = nil; ingredients = nil; items = nil; names = nil
+line_mins = nil; dont_assign = nil; ignore_list = nil; industries = nil
+
 unit.setTimer("buttonsOn", 11)
 unit.setTimer("next", 22)
+
+-- tweak: one full clean-up now that start-up is over. Start-up is when a board is biggest (the requirement text
+-- is read, copied and compiled); without this that garbage stays until the collector gets round to it.
+collectgarbage("collect")

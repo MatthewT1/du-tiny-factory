@@ -269,8 +269,12 @@ function getName(id)
 end
 
 pingkey = "ping:" .. unitName
+memkey = "mem:" .. unitName
 function ping()
     databank.setIntValue(pingkey, mfloor(system.getArkTime()))
+    -- tweak: also publish this board's Lua heap size in KB as mem:<board name>, so memory use can be read from
+    -- the databank in game instead of guessed from the overload messages. Only written, never read by TF.
+    databank.setIntValue(memkey, mfloor(collectgarbage("count")))
 end
 
 -- acutal execution starts here
@@ -333,7 +337,9 @@ if num_lines <= 0 then
 elseif num_lines > 1 then
     num_lines = mceil(num_lines / 1.25)
 end
-items = deserialize(databank.getStringValue(unitkey))
+-- tweak: parse the requirement text already read into `raw` above, instead of reading it from the databank a
+-- second time (two copies of a long string at start-up).
+items = deserialize(raw)
 requirements = {}
 local count = 0
 for _, item in pairs(items) do
@@ -376,6 +382,11 @@ if count == 0 then
     unit.exit()
     return
 end
+
+-- tweak: from here on only `requirements` is used; drop the requirement text and the parsed list so the collector
+-- can free them (they stayed in memory for as long as the board ran).
+raw = nil
+items = nil
 
 maintainMultiplier = 1
 if unitkey == "waitress" then
@@ -423,3 +434,7 @@ end
 
 NestCo = nestco:new(functions)
 function y(f) coroutine.yield(f) end
+
+-- tweak: one full clean-up now that start-up is over. Start-up is when a board is biggest (the requirement text
+-- is read, copied and compiled); without this that garbage stays until the collector gets round to it.
+collectgarbage("collect")
