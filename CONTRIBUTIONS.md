@@ -1,10 +1,12 @@
-# Changes offered from this fork
+# Changes in this fork
 
-Thanks for Tiny Factory and the Settlers version of it. These are some fixes and tweaks I made while running a TF factory on Settlers, in case you want any of them. Each change has its own branch and a draft pull request inside this fork (base `dev`), with the problem, the cause, the fix and how it was tested. Pick any subset; nothing here depends on you taking all of it.
+Fixes and tweaks to [MichelV69's Tiny Factory](https://github.com/MichelV69/du-tiny-factory), made while running a TF factory on the Settlers server. Anyone can use them. Each change has its own branch and a draft pull request in this fork (base `dev`) with the problem, the cause, the fix and how it was tested, so any subset can be taken on its own, upstream included.
 
-**This branch (`integration`)** = your `dev` plus every open change below, one commit each, conflicts already resolved. It is the "pull everything at once" option.
+**This branch (`integration`)** = upstream `dev` plus every open change below, one commit each, conflicts already resolved: everything at once.
 
 **Merging single PRs:** each `.lua.config` keeps every handler's code on one JSON line, so two PRs that touch the same board always conflict in that file. Take either side, then copy the merged `sources/.../unit/onStart(1).lua` back into that handler. The few real code conflicts are listed in the PRs.
+
+**Ready-to-paste boards** (main-based, tested on Settlers): see the releases of this fork.
 
 **"Tested in game"** means the same change ran on my Settlers factory (about 76 machines). Every PR also says what was tested offline (the board code run in Lua with stand-ins for the game).
 
