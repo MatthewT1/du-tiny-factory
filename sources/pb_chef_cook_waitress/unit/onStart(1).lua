@@ -332,6 +332,15 @@ function doBuild(slot, industry, f)
             end
 
             y(f)
+            -- fix: setOutput used to follow stop() straight away. A stop that is not forced lets the machine finish its
+            -- batch first, so it was often still busy: setOutput returned -1 and the game printed "Unknown Schematic".
+            -- Now, if the machine was not already stopped, check it really stopped; if not, put the item back and try
+            -- again on the next pass (no extra wait when it did stop).
+            if state ~= IndustryStatus.stopped and slot.getInfo().state ~= IndustryStatus.stopped then
+                stack.push(item)
+                return
+            end
+            state = IndustryStatus.stopped
             local ret = slot.setOutput(item.id) -- fix: keep the result (-1 = machine still busy)
 
             -- ensure the output item is the wanted id
