@@ -37,6 +37,12 @@ function getStack(industryname)
 
                     local item = requirements[mfloor(tonumber(itemid))]
                     if item then
+                        -- fix: the chef says how many its machine needs (needqty:<id>). The line's own target for the
+                        -- item is only its share of the recipe, so the unit went idle as soon as that was met, still
+                        -- short of the recipe. Raising the requirement itself also keeps the overproduce check happy.
+                        local nq = databank.getIntValue("needqty:" .. itemid)
+                        local want = mceil(nq / maintainMultiplier)
+                        if want > item.quantity then item.quantity = want end
                         entryStack.push(item)
                         added[itemid] = true
                     end
@@ -233,18 +239,33 @@ function doBuild(slot, industry, f)
     end
 end
 
-needcount = 1
-needs_added = {}
+-- fix: before, an ingredient was asked for once per chef start (needs_added[id] was set to true and never cleared),
+-- and always in the first key after the highest one used so far. A transfer unit moves one batch per request, so a
+-- recipe that needs more than one batch stayed short for good. Now the request is repeated once the last one is
+-- older than NEED_RETRY seconds and has been taken; the first free key is used; and the amount the machine needs
+-- is stored as needqty:<id>, so the transfer unit can aim for it (see getStack).
+NEED_RETRY = 60
+needs_added = {} -- item id -> time of the last request
 function addNeed(item)
-    if needs_added[item.id] == true then return end
-    while dbHas("needed" .. needcount) and needcount < 30 do
-        needcount = needcount + 1
+    local now = system.getArkTime()
+    if needs_added[item.id] and (now - needs_added[item.id]) < NEED_RETRY then return end
+    local free = nil
+    for n = 1, 30 do
+        if dbHas("needed" .. n) then
+            if tonumber(databank.getStringValue("needed" .. n)) == item.id then
+                needs_added[item.id] = now -- still waiting to be picked up
+                return
+            end
+        elseif free == nil then
+            free = n
+        end
     end
-    if needcount <= 30 then
-        databank.setStringValue("needed" .. needcount, item.id)
-        if not (suppress_debug == 1) then system.print(needcount .. " Need: " .. item.id) end
-        needs_added[item.id] = true
-    end
+    if free == nil then return end
+    databank.setStringValue("needed" .. free, item.id)
+    if not (suppress_debug == 1) then system.print(free .. " Need: " .. item.id) end
+    needs_added[item.id] = now
+    local q = mfloor(tonumber(item.quantity) or 0)
+    if q > databank.getIntValue("needqty:" .. item.id) then databank.setIntValue("needqty:" .. item.id, q) end
 end
 
 known_industry = {}
