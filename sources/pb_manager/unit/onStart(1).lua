@@ -191,6 +191,9 @@ line_multiplier = math.max(1.0, databank.getFloatValue("line_multiplier"))
 num_lines = math.max(1, databank.getIntValue("num_lines"))
 
 databank.setStringValue("manager_version", manager_version)
+-- away mode: a fresh start of the factory (customer -> manager) always begins in normal mode. Clear the flag the TF
+-- screen's AWAY button sets, so coming back and pressing the customer button ends away mode.
+databank.clearValue("away")
 
 orders = deserialize(databank.getStringValue("orders"))
 if orders == "" then orders = {} end

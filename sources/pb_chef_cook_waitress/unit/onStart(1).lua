@@ -254,7 +254,10 @@ function checkForOverproducing(slot, info)
         end
 
         -- fix: `maintain` is rounded up, so compare it with the rounded-up target that doBuild sets (toMaintain), not the raw product
-        if itemId and requirements[itemId] and maintain > mceil(maintainMultiplier * requirements[itemId].quantity) then
+        -- away mode: the limit is the away target (awayTarget)
+        local allowed = itemId and requirements[itemId] and mceil(maintainMultiplier * requirements[itemId].quantity)
+        if allowed and awayMode then allowed = awayTarget(requirements[itemId]) end
+        if allowed and maintain > allowed then
             slot.stop(false, false)
         elseif itemId == nil or requirements[itemId] == nil then
             slot.stop(false, false)
@@ -283,7 +286,12 @@ function doIndustry(slot, f)
         -- with fewer than 10 machines would wait here forever.
         while cook_check < cook_total do y(f) end -- wait for everyone do be done
 
-        if state ~= IndustryStatus.running then doBuild(slot, industry, f) end
+        -- away mode: one fixed job per machine instead of the normal walk
+        if awayMode then
+            doAway(slot, industry, state, f)
+        elseif state ~= IndustryStatus.running then
+            doBuild(slot, industry, f)
+        end
     else
         cook_check = cook_check + 1
     end
@@ -308,6 +316,9 @@ function checkCooking(slot, industry, f)
         end
     end
 
+    -- away mode: remember the stock this machine reports for its item (the away plan picks the shortest items)
+    local cp = info.currentProducts
+    if cp and cp[1] then noteStock(cp[1].id, info.currentProductAmount) end
     checkForOverproducing(slot, info)
     return state
 end
@@ -335,7 +346,8 @@ function doBuild(slot, industry, f)
     if not (suppress_debug == 1) then system.print("Checking industry for " ..
         industryname .. " with stack size " .. stack.size .. " state: " .. state) end
 
-    while state ~= IndustryStatus.running and skip == false and stack.size > 0 do
+    -- away mode: a walk stops as soon as away mode starts (the away plan then sets this machine)
+    while state ~= IndustryStatus.running and skip == false and stack.size > 0 and not (awayMode and awayPlan == nil) do
         if state == IndustryStatus.no_schemas
             or state == IndustryStatus.running then
             skip = true
@@ -463,6 +475,255 @@ function addNeed(item)
     if q > databank.getIntValue("needqty:" .. item.id) then databank.setIntValue("needqty:" .. item.id, q) end
 end
 
+-- AWAY MODE. Programming boards stop when the player leaves; machines keep running whatever order they last got (a
+-- maintain order restarts by itself whenever its stock drops). So before leaving, the player taps AWAY on the TF screen
+-- (databank key `away` = the time it was set). Each cook board then gives every free machine ONE job, chosen so that as
+-- many different needed items as possible have a machine, and leaves it there:
+--   1. Machines RUNNING a needed item keep it (stopping one mid-batch would leave it stopped after the batch, with no
+--      board left to restart it). Output full / no container / no schematic machines are left alone.
+--   2. Coverage: every item this board makes gets one free machine if any can make it, the shortest items first (stock
+--      last seen by a machine of this board vs. target; never seen = short; a chef "needed" request = shorter still),
+--      and among equally short items the ones fewest machines can make first. Each item goes to the capable machine
+--      with the fewest choices, so flexible machines stay free for the rest.
+--   3. Machines still free take a second job on the item that is shortest per machine already on it.
+--   4. Targets: linecooks and waitress maintain AWAY_DEPTH x their normal target (bigger buffers while nobody refills
+--      by hand); the chef keeps the order quantity.
+-- While away mode is on (player still there), the boards keep the plan: no re-assigning, the overproduce check allows
+-- the away targets, and a planned machine found stopped is set again. Tapping the screen again (or restarting the
+-- customer board, which restarts the manager, which clears `away`) brings back normal mode: the overproduce check then
+-- stops machines above their normal target and the normal walk gives them work.
+-- Progress: awaystat:<board> = "machines set/machines on this board"; the screen adds them up in its header.
+AWAY_DEPTH = 3
+awayStamp = 0
+awayMode = false
+awayPlan = nil
+awayPlanning = false
+awayDone = {}
+stockSeen = {}
+awayKey = "awaystat:" .. unitName:lower()
+-- while machines are being set, the `next` timer runs every AWAY_FAST_TICK s (a slow board would take several
+-- minutes); back to the board's normal pace once all are set or away mode ends
+AWAY_FAST_TICK = 3
+awayFast = false
+function setPace(fast)
+    if fast == awayFast then return end
+    awayFast = fast
+    unit.stopTimer("next")
+    local normal = nextTime or 1
+    unit.setTimer("next", fast and math.min(normal, AWAY_FAST_TICK) or normal)
+end
+
+-- the maintain target a machine gets in away mode (one function, so the plan and the overproduce check agree)
+function awayTarget(item)
+    if unitkey == "chef" then return mceil(item.quantity * maintainMultiplier) end
+    return mceil(item.quantity * maintainMultiplier * AWAY_DEPTH)
+end
+
+-- stock of an item in this board's hub, as a machine making it reports it (same rescaling as the screen)
+function noteStock(id, amount)
+    if id == nil or amount == nil or amount < 0 then return end
+    amount = mceil(amount)
+    if amount > 99999 then amount = mfloor(amount / 16777216) end
+    stockSeen[id] = amount
+end
+
+function publishAway()
+    local done, total = 0, 0
+    for sid, _ in pairs(industries) do
+        total = total + 1
+        if awayDone[sid] then done = done + 1 end
+    end
+    databank.setStringValue(awayKey, done .. "/" .. total)
+    if done == total then setPace(false) end
+end
+
+-- called by the ping timer: notice the `away` key changing
+function checkAway()
+    local a = databank.getIntValue("away")
+    if a ~= awayStamp then
+        awayStamp = a
+        awayMode = (a > 0)
+        awayPlan, awayDone = nil, {}
+        setPace(awayMode)
+        if awayMode then
+            system.print("TF " .. unitName .. ": AWAY mode - giving every free machine one job")
+        else
+            databank.clearValue(awayKey)
+            system.print("TF " .. unitName .. ": back to normal mode")
+        end
+    end
+    if awayMode then publishAway() end
+end
+
+-- could this machine make the item? Same rule as getStack, except that an item without a producer list is only given
+-- to the machine kind already seen making it (no guessing while nobody is there to watch)
+function canMake(industry, item)
+    if refused[item.id .. ":" .. tostring(industry.itemId)] then return false end
+    if isATransferUnit(industry.name) then return true end
+    local p = getProducers(item.id)
+    if p and industry.itemId then return p[industry.itemId] == true end
+    return getKnown(item.id) == industry.name
+end
+
+function planAway(f)
+    awayPlanning = true
+    local free, cover, running, skipped = {}, {}, 0, 0
+    local looked = 0
+    for sid, ind in pairs(industries) do
+        looked = looked + 1
+        if looked % 4 == 0 then y(f) end
+        local info = ind.slot.getInfo()
+        local cp = info.currentProducts
+        local cur = cp and cp[1] and cp[1].id
+        if info.state == IndustryStatus.running then
+            if cur and requirements[cur] then cover[cur] = (cover[cur] or 0) + 1 end
+            running = running + 1
+        elseif info.state == IndustryStatus.stopped or info.state == IndustryStatus.jammed
+            or info.state == IndustryStatus.pending then
+            free[#free + 1] = ind
+        else
+            skipped = skipped + 1
+        end
+    end
+    -- items some machine reported missing (chef, needed<n>): count as shorter
+    local needed = {}
+    for count = 1, 30 do
+        local v = databank.getStringValue("needed" .. count)
+        if v ~= "" then needed[mfloor(tonumber(v) or 0)] = true end
+    end
+    -- what each free machine type can make
+    local cands, candSet, n = {}, {}, 0
+    for _, ind in ipairs(free) do
+        local tu = isATransferUnit(ind.name)
+        local key = tu and "transfer" or tostring(ind.itemId)
+        if cands[key] == nil then
+            local list, set = {}, {}
+            for id, item in pairs(requirements) do
+                -- a yield after every 10 recipe look-ups (most are cached by the normal walks already)
+                if producers[item.id] == nil and not tu then
+                    n = n + 1
+                    if n % 10 == 0 then y(f) end
+                end
+                if canMake(ind, item) then list[#list + 1] = item; set[id] = true end
+            end
+            cands[key], candSet[key] = list, set
+        end
+        ind.awayKey = key
+    end
+    local capable, pr, order = {}, {}, {}
+    for _, ind in ipairs(free) do
+        for _, item in ipairs(cands[ind.awayKey]) do capable[item.id] = (capable[item.id] or 0) + 1 end
+    end
+    for id, item in pairs(requirements) do
+        local s = stockSeen[id]
+        local v = 1
+        if s then v = math.max(0, 1 - s / math.max(1, item.quantity * maintainMultiplier)) end
+        if needed[id] then v = v + 1 end
+        pr[id] = v
+        if capable[id] then order[#order + 1] = item end
+    end
+    y(f)
+    table.sort(order, function(a, b)
+        if pr[a.id] ~= pr[b.id] then return pr[a.id] > pr[b.id] end
+        if capable[a.id] ~= capable[b.id] then return capable[a.id] < capable[b.id] end
+        return a.id < b.id
+    end)
+    local plan, used, planned = {}, {}, 0
+    -- pass 1: one machine per item nobody covers yet
+    for _, item in ipairs(order) do
+        if not cover[item.id] then
+            local best
+            for _, ind in ipairs(free) do
+                if not used[ind.id] and candSet[ind.awayKey][item.id]
+                    and (best == nil or #cands[ind.awayKey] < #cands[best.awayKey]) then best = ind end
+            end
+            if best then
+                plan[best.id] = { item = item }
+                used[best.id] = true
+                cover[item.id] = 1
+                planned = planned + 1
+            end
+        end
+    end
+    y(f)
+    -- pass 2: the machines left over help on the shortest item per machine already on it
+    for _, ind in ipairs(free) do
+        if not used[ind.id] then
+            local best, bestScore
+            for _, item in ipairs(cands[ind.awayKey]) do
+                local score = pr[item.id] / (1 + (cover[item.id] or 0))
+                if best == nil or score > bestScore then best, bestScore = item, score end
+            end
+            if best then
+                plan[ind.id] = { item = best }
+                used[ind.id] = true
+                cover[best.id] = (cover[best.id] or 0) + 1
+                planned = planned + 1
+            end
+        end
+    end
+    local uncovered = 0
+    for id, _ in pairs(requirements) do
+        if not cover[id] then uncovered = uncovered + 1 end
+    end
+    for _, job in pairs(plan) do job.target = awayTarget(job.item) end
+    system.print("TF " .. unitName .. ": away plan: " .. planned .. " machines get a job, " .. running
+        .. " keep running, " .. (#free - planned + skipped) .. " left as they are; " .. uncovered
+        .. " items have no machine while away (stock only)")
+    if awayMode then awayPlan = plan end
+    awayPlanning = false
+end
+
+-- away mode, one machine: plan once per board, then set this machine's job (or leave it)
+function doAway(slot, industry, state, f)
+    if awayPlan == nil then
+        if awayPlanning then
+            while awayPlanning do y(f) end
+        else
+            planAway(f)
+        end
+        if awayPlan == nil then return end
+    end
+    local sid = industry.id
+    local job = awayPlan[sid]
+    if job == nil then
+        awayDone[sid] = true
+        -- stopped and nothing planned: the normal walk may find work
+        if state == IndustryStatus.stopped then doBuild(slot, industry, f) end
+        return
+    end
+    if awayDone[sid] and state ~= IndustryStatus.stopped then return end -- already set; again only if it stopped
+    if state == IndustryStatus.running then awayDone[sid] = true; return end -- started on its own: leave it running
+    if state ~= IndustryStatus.stopped then
+        y(f)
+        slot.stop(false, false)
+    end
+    y(f)
+    -- a stop that is not forced lets the machine finish its batch: set the job on a later pass, once it has stopped
+    if state ~= IndustryStatus.stopped and slot.getInfo().state ~= IndustryStatus.stopped then return end
+    local ret = slot.setOutput(job.item.id)
+    if ret == -1 then return end -- not stopped yet: next pass
+    y(f)
+    local outputs = slot.getOutputs()
+    if outputs and outputs[1] and outputs[1].id == job.item.id then
+        y(f)
+        slot.startMaintain(job.target)
+        setKnown(industry.name, job.item.id)
+        awayDone[sid] = true
+        if unitname == "chef" then
+            y(f)
+            if slot.getInfo().state == IndustryStatus.jammed then
+                for _, input_item in pairs(slot.getInputs()) do addNeed(input_item) end
+            end
+        end
+    else
+        noteRefused(job.item, industry.itemId, ret, industry.name)
+        awayPlan[sid] = nil
+        awayDone[sid] = true
+        doBuild(slot, industry, f)
+    end
+end
+
 known_industry = {}
 function getKnown(id)
     local key = "known:" .. id
@@ -497,6 +758,7 @@ function ping()
     -- tweak: also publish this board's Lua heap size in KB as mem:<board name>, so memory use can be read from
     -- the databank in game instead of guessed from the overload messages. Only written, never read by TF.
     databank.setIntValue(memkey, mfloor(collectgarbage("count")))
+    checkAway() -- away mode: notice the screen's AWAY button
 end
 
 -- acutal execution starts here
@@ -636,6 +898,7 @@ local tickRatio = mceil((2.37 / 3.0) * 100) / 100
 local wide_load = math.max(0, (machine_count - 40) / 2)
 local nextTickSeconds = tickRatio * (num_lines + wide_load)
 unit.setTimer("next", nextTickSeconds)
+nextTime = nextTickSeconds -- away mode: the normal pace to return to after the fast ticks
 unit.setTimer("ping", 5)
 
 -- do not change the following

@@ -183,11 +183,22 @@ function scanFactory()
     end
     addMissingRows(rows, types)
 
+    -- away mode for the header: "-" = normal mode, else "<machines set>/<machines>" over all boards
+    local awayText = "-"
+    if databank.getIntValue("away") > 0 then
+        local done, total = 0, 0
+        for _, bname in ipairs(askBoards) do
+            local d, t = databank.getStringValue("awaystat:" .. bname):match("^(%d+)/(%d+)$")
+            if d then done = done + tonumber(d); total = total + tonumber(t) end
+        end
+        awayText = done .. "/" .. total
+    end
+
     scanNo = scanNo + 1
     local desc = (factory_desc or ""):gsub("[|\n]", " "):sub(1, 40)
     local function header(page, count)
         return "#TF2|" .. scanNo .. "|" .. page .. "|" .. count .. "|" .. #rows .. "|" .. manager_version .. "|"
-            .. num_lines .. "|" .. feed_multiplier .. "|" .. line_multiplier .. "|" .. desc
+            .. num_lines .. "|" .. feed_multiplier .. "|" .. line_multiplier .. "|" .. desc .. "|" .. awayText
     end
     local room = SCREEN_MAX_INPUT - #header(99, 99) - 1 -- header size with the widest page numbers
 
@@ -211,7 +222,28 @@ function scanFactory()
     screen.activate()
 end
 
+-- AWAY BUTTON. screen.lua draws an AWAY button in its header; after a confirm tap it sends "TF_AWAY_ON" or
+-- "TF_AWAY_OFF". This board turns that into the databank key `away` (the time it was set), which every cook board
+-- watches, and rescans at once so the header shows the new state.
+function checkTap()
+    local out = screen.getScriptOutput()
+    if out == nil or out == "" then return end
+    screen.clearScriptOutput()
+    if out == "TF_AWAY_ON" then
+        databank.setIntValue("away", mfloor(system.getArkTime()))
+        system.print("TF screen: AWAY mode on - wait until the header says all machines are set, then leave")
+    elseif out == "TF_AWAY_OFF" then
+        databank.clearValue("away")
+        system.print("TF screen: AWAY mode off - back to normal")
+    else
+        return
+    end
+    lastScan = -1000000
+    pageNo = #pages
+end
+
 function screenTick()
+    checkTap()
     if pageNo >= #pages then
         local now = system.getArkTime()
         if now - lastScan < SCAN_SECONDS then return end
