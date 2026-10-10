@@ -92,10 +92,26 @@ function getProducers(id)
     if p == nil then
         p = false
         local recipes = system.getRecipes(id)
+        -- fix: catalysts (and anything like them) have one recipe that makes the item from scratch and several
+        -- "hand-back" recipes that take the item IN as an ingredient and return it while making something else (glass,
+        -- alloys). A machine that runs a hand-back recipe is not a maker of the item: skip those recipes, unless every
+        -- recipe is hand-back (then keep them all, as before).
+        local function handBack(recipe)
+            for _, ing in pairs(recipe.ingredients or {}) do
+                if ing.id == id then return true end
+            end
+            return false
+        end
+        local keep = false
         for _, recipe in pairs(recipes or {}) do
-            for _, machineId in pairs(recipe.producers or {}) do
-                if not p then p = {} end
-                p[machineId] = true
+            if not handBack(recipe) then keep = true end
+        end
+        for _, recipe in pairs(recipes or {}) do
+            if not keep or not handBack(recipe) then
+                for _, machineId in pairs(recipe.producers or {}) do
+                    if not p then p = {} end
+                    p[machineId] = true
+                end
             end
         end
         producers[id] = p
