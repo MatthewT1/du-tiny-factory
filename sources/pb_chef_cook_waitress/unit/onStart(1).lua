@@ -62,7 +62,8 @@ function getStack(industryname, machineId, f)
                 wanted = (p[machineId] == true)
             else
                 local known = getKnown(item.id) -- old rule: do we already know this item's proper industry?
-                wanted = (known == "" or known == industryname)
+                -- fix: also skip an item this exact machine type already refused (see noteRefused)
+                wanted = (known == "" or known == industryname) and not refused[item.id .. ":" .. tostring(machineId)]
             end
         end
         if wanted then entryStack.push(item) end
@@ -87,6 +88,43 @@ function getProducers(id)
         producers[id] = p
     end
     return p
+end
+
+-- fix: ITEMS WITHOUT A PRODUCER LIST. When the game gives no producer list for an item (seen with a wrong item id in
+-- an order), the old known: rule offered it to every kind of machine on every walk; each machine did not take it and
+-- the game printed "Unknown Schematic" in the Lua chat each time.
+-- Now (1) such an item is not offered again to a machine type (exact machine item id) that already refused it, until
+-- the board restarts; (2) once 3 machine types refused it and no machine ever made it, the board writes it to
+-- badids:<board> ("id=Name;...", at most 3), so the screen can say "confirm item id" (the order probably has a wrong
+-- item id). The flag is removed as soon as a machine on this board takes the item, and at every board start.
+refused = {}
+refusedCount = {}
+flagged = {}
+flaggedKey = "badids:" .. unitName:lower()
+function publishFlagged()
+    local parts, n = {}, 0
+    for id, name in pairs(flagged) do
+        n = n + 1
+        if n <= 3 then parts[n] = id .. "=" .. (name:gsub("[;=]", " ")) end
+    end
+    if n == 0 then databank.clearValue(flaggedKey) else databank.setStringValue(flaggedKey, table.concat(parts, ";")) end
+end
+function noteRefused(item, machineItem)
+    if producers[item.id] ~= false then return end
+    local key = item.id .. ":" .. tostring(machineItem)
+    if refused[key] then return end
+    refused[key] = true
+    refusedCount[item.id] = (refusedCount[item.id] or 0) + 1
+    if refusedCount[item.id] >= 3 and flagged[item.id] == nil and getKnown(item.id) == "" then
+        flagged[item.id] = getName(item.id)
+        publishFlagged()
+    end
+end
+function unflagItem(id)
+    if flagged[id] ~= nil then
+        flagged[id] = nil
+        publishFlagged()
+    end
 end
 
 function checkForOverproducing(slot, info)
@@ -239,6 +277,7 @@ function doBuild(slot, industry, f)
                     " maintaining " .. getName(item.id) .. " x" .. toMaintain) end
 
                 setKnown(industryname, item.id)
+                unflagItem(item.id) -- fix: a machine took it, so drop any "confirm item id" flag
                 -- get the new status, e.g. do we need schematics?
                 y(f)
                 local info = slot.getInfo()
@@ -265,6 +304,9 @@ function doBuild(slot, industry, f)
                 end
                 -- make sure we're not cooking too many, sometimes a bug will put in way too many
                 checkForOverproducing(slot, info)
+            else
+                -- fix: the machine did not take the item: remember that (items without a producer list only)
+                noteRefused(item, industry.itemId)
             end
         end
     end
@@ -354,6 +396,9 @@ end
 
 databank.setStringValue(unitname .. "_version", chef_linecook_version)
 databank.setStringValue("status:" .. unitname, "active")
+-- fix: clear this board's "confirm item id" flag at start; otherwise a flag stays after the order was corrected.
+-- It is set again within a few minutes if an item is still refused.
+databank.clearValue(flaggedKey)
 if not (suppress_debug == 1) then out("INFO: ", unitname, " is alive as type [", unitkey, "]") end
 
 suppress_debug = math.max(0, databank.getIntValue("suppress_debug"))
