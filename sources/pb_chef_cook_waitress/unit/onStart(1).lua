@@ -16,7 +16,13 @@ function adjustIndustryName(text)
     return text
 end
 
-function getStack(industryname)
+-- fix: a machine used to be offered every requirement whose known:<id> was empty or named its kind, and the kind is
+-- the machine name with the tier cut off ("electronics m"). So Basic machines were offered Uncommon-only items, and
+-- items no linked machine can make were offered to every machine on every walk; each refusal shows as
+-- "Unknown Schematic" in the Lua chat. Now an item goes only to machines whose exact type (item id, tier included)
+-- is in the item's recipe producers. If the game gives no producer list for an item, the old known: rule is used.
+-- known: is still written, so boards with the old code keep working next to this one.
+function getStack(industryname, machineId, f)
     local entryStack = newStack()
     if isATransferUnit(industryname) then
         local added = {}
@@ -39,14 +45,144 @@ function getStack(industryname)
         if entryStack.size > 0 then return entryStack end
     end
 
+    local lookups = 0
     for id, item in pairs(requirements) do
-        local known = getKnown(item.id) -- do we already know this item's proper industry?
-
-        if isATransferUnit(industryname) or (known == "" or known == industryname) then
-            entryStack.push(item)
+        local wanted
+        if isATransferUnit(industryname) then
+            -- fix: not an item this transfer unit type already refused twice (see noteRefused)
+            wanted = not refused[item.id .. ":" .. tostring(machineId)]
+        else
+            -- fix: the first look-up of an item asks the game for its recipes; yield after every 10 of those, so the
+            -- first walk after a start does not do ~80 look-ups in one tick (CPU limit)
+            if producers[item.id] == nil then
+                lookups = lookups + 1
+                if f and lookups % 10 == 0 then y(f) end
+            end
+            local p = getProducers(item.id)
+            if p and machineId then
+                -- fix: also not an item this exact machine type refused twice although the game lists it as a maker
+                -- (see noteRefused)
+                wanted = (p[machineId] == true) and not refused[item.id .. ":" .. tostring(machineId)]
+            else
+                local known = getKnown(item.id) -- old rule: do we already know this item's proper industry?
+                -- fix: also skip an item this exact machine type already refused (see noteRefused)
+                wanted = (known == "" or known == industryname) and not refused[item.id .. ":" .. tostring(machineId)]
+            end
         end
+        if wanted then entryStack.push(item) end
     end
     return shuffle(entryStack)
+end
+
+-- fix: producers[itemId] = the set of machine item ids that can make the item (from all of its recipes), or false
+-- when the game gives no producer list. Looked up once per item and kept (a few numbers each).
+producers = {}
+function getProducers(id)
+    local p = producers[id]
+    if p == nil then
+        p = false
+        local recipes = system.getRecipes(id)
+        for _, recipe in pairs(recipes or {}) do
+            for _, machineId in pairs(recipe.producers or {}) do
+                if not p then p = {} end
+                p[machineId] = true
+            end
+        end
+        producers[id] = p
+    end
+    return p
+end
+
+-- fix: ITEMS WITHOUT A PRODUCER LIST. When the game gives no producer list for an item (seen with a wrong item id in
+-- an order), the old known: rule offered it to every kind of machine on every walk; each machine did not take it and
+-- the game printed "Unknown Schematic" in the Lua chat each time.
+-- Now (1) such an item is not offered again to a machine type (exact machine item id) that already refused it, until
+-- the board restarts; (2) once 3 machine types refused it and no machine ever made it, the board writes it to
+-- badids:<board> ("id=Name;...", at most 3), so the screen can say "confirm item id" (the order probably has a wrong
+-- item id). The flag is removed as soon as a machine on this board takes the item, and at every board start.
+refused = {}
+refusedCount = {}
+flagged = {}
+flaggedKey = "badids:" .. unitName:lower()
+function publishFlagged()
+    local parts, n = {}, 0
+    for id, name in pairs(flagged) do
+        n = n + 1
+        if n <= 3 then parts[n] = id .. "=" .. (name:gsub("[;=]", " ")) end
+    end
+    if n == 0 then databank.clearValue(flaggedKey) else databank.setStringValue(flaggedKey, table.concat(parts, ";")) end
+end
+-- fix: REFUSALS OF ITEMS THAT DO HAVE A PRODUCER LIST. Only items without a producer list were remembered (above),
+-- so an item whose list names this machine type but which the machine still does not take (for example a catalyst
+-- whose hand-back recipes list a glass furnace) was offered again on every walk, for ever: a steady trickle of
+-- "Unknown Schematic". Now such an item gets two tries per machine type, then it is not offered to that machine type
+-- again until the board restarts. Same for transfer units. `ret` is what setOutput returned: -1 means the machine was
+-- not stopped yet (a stop that waits for the current batch), which is not a refusal, so it does not count.
+strikes = {}
+function noteRefused(item, machineItem, ret, industryname)
+    if ret == -1 then reportRefusal(item, machineItem, industryname, "busy") return end
+    local key = item.id .. ":" .. tostring(machineItem)
+    if refused[key] then return end
+    if producers[item.id] ~= false then
+        strikes[key] = (strikes[key] or 0) + 1
+        if strikes[key] == 1 then reportRefusal(item, machineItem, industryname) end
+        if strikes[key] >= 2 then refused[key] = true end
+        return
+    end
+    reportRefusal(item, machineItem, industryname)
+    refused[key] = true
+    refusedCount[item.id] = (refusedCount[item.id] or 0) + 1
+    if refusedCount[item.id] >= 3 and flagged[item.id] == nil and getKnown(item.id) == "" then
+        flagged[item.id] = getName(item.id)
+        publishFlagged()
+    end
+end
+-- SAY WHICH ITEM. The game's "Unknown Schematic" line names neither the item nor the machine. When a machine does not
+-- take an item, this board now prints ONE line right after it (the first time per item and machine type; "busy" at
+-- most 3 times per start) with the item, the exact machine and which kind of problem it is:
+--   B = the game lists this machine type as a maker, but it refused -> a TF/game mismatch, not a missing machine
+--   I = the game lists no machine at all for this item id            -> most likely a wrong item id in the orders
+--   N = the game does not list this machine type                     -> TF offered it to the wrong machine (TF bug)
+--   T = a transfer unit refused it
+-- A missing machine tier never shows up here: an item no linked machine can make is never offered. The screen lists
+-- those as MISSING rows. The last 4 B/N/T cases are kept in refused:<board> for the screen ("I" items already get the
+-- screen's "confirm item id" row).
+REFUSED_TEXT = {
+    B = "game lists this machine as a maker -> TF/game mismatch (bug), not a missing machine",
+    I = "game lists NO machine for this id -> wrong item id in the orders?",
+    N = "game does not list this machine -> TF offered it to the wrong machine (TF bug)",
+    T = "transfer unit refused it",
+    busy = "machine was still busy (-1), will try again",
+}
+refusedKey = "refused:" .. unitName:lower()
+reported = {}
+busyPrinted = 0
+function reportRefusal(item, machineItem, industryname, code)
+    if code == "busy" then
+        if busyPrinted >= 3 then return end
+        busyPrinted = busyPrinted + 1
+    else
+        local p = producers[item.id]
+        if isATransferUnit(industryname) then code = "T"
+        elseif p == false then code = "I"
+        elseif p and machineItem and p[machineItem] then code = "B"
+        else code = "N" end
+    end
+    local machine = machineItem and getName(machineItem) or industryname
+    system.print("TF " .. unitName .. ": refused " .. getName(item.id) .. " (" .. item.id .. ") on " .. machine .. ": "
+        .. REFUSED_TEXT[code])
+    if code ~= "busy" and code ~= "I" then
+        reported[#reported + 1] = item.id .. ">" .. tostring(machineItem or 0) .. ">" .. code
+        if #reported > 4 then table.remove(reported, 1) end
+        databank.setStringValue(refusedKey, table.concat(reported, ";"))
+    end
+end
+
+function unflagItem(id)
+    if flagged[id] ~= nil then
+        flagged[id] = nil
+        publishFlagged()
+    end
 end
 
 function checkForOverproducing(slot, info)
@@ -139,11 +275,15 @@ function doBuild(slot, industry, f)
     local state = info.state
     local skip = false
 
+    -- fix: one work stack per exact machine type (its item id), so a Basic and an Uncommon machine of the same kind
+    -- no longer share one list. Transfer units keep their shared stack.
+    local stackKey = industryname
+    if isNotATransferUnit(industryname) and industry.itemId then stackKey = industry.itemId end
     local stack
-    if stacks[industryname] == nil or stacks[industryname].size == 0 then
-        stacks[industryname] = getStack(industryname)
+    if stacks[stackKey] == nil or stacks[stackKey].size == 0 then
+        stacks[stackKey] = getStack(industryname, industry.itemId, f)
     end
-    stack = stacks[industryname]
+    stack = stacks[stackKey]
 
     if not (suppress_debug == 1) then system.print("Checking industry for " ..
         industryname .. " with stack size " .. stack.size .. " state: " .. state) end
@@ -180,7 +320,7 @@ function doBuild(slot, industry, f)
             end
 
             y(f)
-            slot.setOutput(item.id)
+            local ret = slot.setOutput(item.id) -- fix: keep the result (-1 = machine still busy)
 
             -- ensure the output item is the wanted id
             y(f)
@@ -195,6 +335,7 @@ function doBuild(slot, industry, f)
                     " maintaining " .. getName(item.id) .. " x" .. toMaintain) end
 
                 setKnown(industryname, item.id)
+                unflagItem(item.id) -- fix: a machine took it, so drop any "confirm item id" flag
                 -- get the new status, e.g. do we need schematics?
                 y(f)
                 local info = slot.getInfo()
@@ -221,6 +362,9 @@ function doBuild(slot, industry, f)
                 end
                 -- make sure we're not cooking too many, sometimes a bug will put in way too many
                 checkForOverproducing(slot, info)
+            else
+                -- fix: the machine did not take the item: remember that (see noteRefused)
+                noteRefused(item, industry.itemId, ret, industryname)
             end
         end
     end
@@ -290,7 +434,10 @@ for slot_name, slot in pairs(unit) do
             industry = {
                 id = slotId,
                 slot = slot,
-                name = adjustIndustryName(slot.getName())
+                name = adjustIndustryName(slot.getName()),
+                -- fix: the exact machine type as an item id (tier and size included). `name` above drops the tier,
+                -- so it cannot tell a Basic machine from an Uncommon one.
+                itemId = slot.getItemId()
             }
             industries[slotId] = industry
             -- table.insert(industries, industry)
@@ -307,6 +454,10 @@ end
 
 databank.setStringValue(unitname .. "_version", chef_linecook_version)
 databank.setStringValue("status:" .. unitname, "active")
+-- fix: clear this board's "confirm item id" flag at start; otherwise a flag stays after the order was corrected.
+-- It is set again within a few minutes if an item is still refused.
+databank.clearValue(flaggedKey)
+databank.clearValue(refusedKey) -- same for the refusal list: this start begins a fresh one
 if not (suppress_debug == 1) then out("INFO: ", unitname, " is alive as type [", unitkey, "]") end
 
 suppress_debug = math.max(0, databank.getIntValue("suppress_debug"))
