@@ -39,6 +39,8 @@ local C = {
 -- where it means no ore arrived (upstream screen showed that one as "NEED ORE" in red; kept).
 local STATES = {
     S = { "NO SCHEM", C.red,    1 },
+    X = { "REFUSED",  C.red,    1 }, -- a machine did not take an item (from a cook board's refusal list)
+    M = { "MISSING",  C.yellow, 1 }, -- no TF machine of the right type/tier for this item
     O = { "NEED ORE", C.red,    1 },
     F = { "FULL",     C.yellow, 2 },
     N = { "NO CONT.", C.yellow, 2 },
@@ -53,6 +55,7 @@ local UNKNOWN = { "?", C.dim, 6 }
 local function boardLabel(code)
     if code == "C" then return "chef", 1 end
     if code == "W" then return "wait", 20 end
+    if code == "L" then return "lines", 15 end -- MISSING rows for the linecook list (any line)
     local n = tonumber(code)
     if n then return "L" .. n, 1 + n end
     return code, 30
