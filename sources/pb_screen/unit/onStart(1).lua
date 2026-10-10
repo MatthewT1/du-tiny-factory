@@ -67,6 +67,25 @@ function scanFactory()
 
     databank.setIntValue("machine_count", #rows)
 
+    -- fix: a cook board that found an item no machine will take (the game lists no recipe for it, refused by 3 machine
+    -- types) writes it to badids:<board> ("id=Name;..."). Each one becomes an extra row at the top of the screen (red
+    -- "NO SCHEM" state, ERROR in the machine column) saying to check that item id in the customer board. Same row
+    -- format as a machine, so screen.lua needs no change. Boards that do not write the key change nothing here.
+    local askBoards, seenBad = { "chef", "waitress" }, {}
+    for n = 1, num_lines do askBoards[#askBoards + 1] = "linecook" .. n end
+    for _, bname in ipairs(askBoards) do
+        local v = databank.getStringValue("badids:" .. bname)
+        if v ~= "" then
+            for id, name in v:gmatch("(%d+)=([^;]*)") do
+                if not seenBad[id] then
+                    seenBad[id] = true
+                    rows[#rows + 1] = "e" .. id .. ",!,ERROR,S,0,0,confirm item id: " .. (name:gsub(",", ""))
+                        .. " (" .. id .. ")"
+                end
+            end
+        end
+    end
+
     scanNo = scanNo + 1
     local desc = (factory_desc or ""):gsub("[|\n]", " "):sub(1, 40)
     local function header(page, count)
