@@ -86,8 +86,8 @@ local function readInput(input)
             -- id,board,machine,state,current,maintain,item (the item name takes the rest, commas and all)
             local id, b, m, st, cur, max, item = line:match("^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.*)$")
             if id then
-                TF.rows[id] = { board = b, machine = m, st = st, cur = tonumber(cur) or 0, max = tonumber(max) or 0,
-                    item = item, scan = scan }
+                TF.rows[id] = { id = id, board = b, machine = m, st = st, cur = tonumber(cur) or 0,
+                    max = tonumber(max) or 0, item = item, scan = scan }
             end
         end
     end
@@ -111,18 +111,25 @@ end
 -- 2. Sort rows and count states.
 ---------------------------------------------------------------------------------------------------------------------
 local list, counts = {}, { good = 0, wait = 0, warn = 0, bad = 0 }
+local notes = {} -- tweak: refusal notes (state X) go to a strip at the bottom, not into the machine list
 for _, r in pairs(TF.rows) do
-    local code = r.st
-    if code == "W" and r.machine:find("^Refiner") then code = "O" end
-    local s = STATES[code] or UNKNOWN
-    r.label, r.color, r.rank = s[1], s[2], s[3]
-    r.boardText, r.boardRank = boardLabel(r.board)
-    if r.rank == 1 then counts.bad = counts.bad + 1
-    elseif r.rank == 2 then counts.warn = counts.warn + 1
-    elseif r.rank == 3 then counts.good = counts.good + 1
-    else counts.wait = counts.wait + 1 end
-    list[#list + 1] = r
+    if r.st == "X" then
+        r.boardText = boardLabel(r.board)
+        notes[#notes + 1] = r
+    else
+        local code = r.st
+        if code == "W" and r.machine:find("^Refiner") then code = "O" end
+        local s = STATES[code] or UNKNOWN
+        r.label, r.color, r.rank = s[1], s[2], s[3]
+        r.boardText, r.boardRank = boardLabel(r.board)
+        if r.rank == 1 then counts.bad = counts.bad + 1
+        elseif r.rank == 2 then counts.warn = counts.warn + 1
+        elseif r.rank == 3 then counts.good = counts.good + 1
+        else counts.wait = counts.wait + 1 end
+        list[#list + 1] = r
+    end
 end
+table.sort(notes, function(a, b) return a.id < b.id end)
 
 table.sort(list, function(a, b)
     local k1a, k1b, k2a, k2b = a.rank, b.rank, a.boardRank, b.boardRank
@@ -188,6 +195,27 @@ end
 
 -- Body
 local top, bottom = headH + pad * 0.6, ry - footH - pad * 0.4
+
+-- tweak: NOTES strip, grey lines above the footer, never counted as problems. Red "REFUSED" rows in the machine list
+-- looked like jammed machines, but they only say the game refused an item for a machine.
+if #notes > 0 then
+    local MAX_NOTES = 3
+    local lineH = math.floor(14 * unit)
+    local shownNotes = math.min(#notes, MAX_NOTES)
+    local stripH = lineH * (shownNotes + 1 + (#notes > MAX_NOTES and 1 or 0)) + pad * 0.3
+    local sy = bottom - stripH + pad * 0.2
+    fill(lBack, C.stripe); addBox(lBack, pad, sy, rx - pad * 2, stripH - pad * 0.2)
+    text(fSmall, "NOTES (not errors: the game refused an item for a machine; nothing is jammed)", pad * 1.4,
+        sy + lineH * 0.6, C.dim)
+    for i = 1, shownNotes do
+        local r = notes[i]
+        text(fSmall, r.boardText .. "  " .. r.machine .. ":  " .. r.item, pad * 1.4, sy + lineH * (i + 0.6), C.dim)
+    end
+    if #notes > MAX_NOTES then
+        text(fSmall, "+" .. (#notes - MAX_NOTES) .. " more notes", pad * 1.4, sy + lineH * (MAX_NOTES + 1.6), C.dim)
+    end
+    bottom = bottom - stripH
+end
 local H = bottom - top
 local n = #list
 
