@@ -2,6 +2,13 @@
 
 Built on [MichelV69's Tiny Factory](https://github.com/MichelV69/du-tiny-factory). Huge thanks to him: it is his foundation, I only added things on top, in my own hacky way. If this does not work for you, go back to his original: https://github.com/MichelV69/du-tiny-factory
 
+## New in v2
+- **OVERCLOCKS PATCHED.** Advanced Atmospheric and Space Engine Overclocks (and other chef items that need a big batch of one ingredient, like Uncommon Power System) now get made. In the current game build `databank.hasKey` returns true/false instead of 1/0, so the chef's ingredient requests to the transfer units never worked. The chef also missed jams it found just before stopping a machine, and asked for each ingredient only once.
+- The chef asks again for an ingredient that has not fully arrived, and the transfer units fetch the full recipe amount, not just the line's share.
+- Every change from v1 now has its own pull request (links below), and the `integration` branch has all of them on top of MichelV69's `dev`.
+
+Update from v1: paste the six cook boards again (chef, linecook1-4, waitress). Manager, screen, the screen script and the customer board are the same as in v1.
+
 ## What is different
 - Machines are only offered items the game says they can make (right machine type and tier).
 - Items a machine refuses are remembered; after two tries it is not offered that item again.
@@ -20,7 +27,7 @@ Built on [MichelV69's Tiny Factory](https://github.com/MichelV69/du-tiny-factory
 ## A note on testing and the PRs
 I tested these boards in game on the Settlers server, on a factory with 4 lines and 76 machines, plus offline simulations. All of it was done against the upstream **main** branch, not `dev`, so the boards here are based on main (v1.2.x), not on his `dev` work.
 
-Pull requests for each change below are pending. They will be small, one per change, on top of `dev`, and will be linked here once they are open. The changes are already implemented in the files in this release, so you do not need to wait for the PRs to try them.
+Every change now has a small pull request of its own, on top of his `dev` (draft PRs inside my fork, listed below and in `CONTRIBUTIONS.md` on the `integration` branch). The files in this release already have them, so you do not need the PRs to try them.
 
 ## How the new parts work
 
@@ -48,7 +55,7 @@ Limits: each transfer unit moves one item while you are away. The chef's assembl
 - The screen refreshes every 3 seconds instead of every second, which saves script memory.
 
 ## More details on each change
-Each change has (or will get) its own pull request in my fork, with the symptom, cause, fix, tests and risks. A short reason for each is in `CHANGES.md`.
+Each change has its own pull request in my fork, with the symptom, cause, fix, tests and risks. A short reason for each is in `CHANGES.md`.
 
 **Earlier fixes** (open as drafts in my fork, based on his `dev`):
 
@@ -69,16 +76,22 @@ Each change has (or will get) its own pull request in my fork, with the symptom,
 | [#13](https://github.com/MatthewT1/du-tiny-factory/pull/13) | Manager watchdog: back off before restarting a board that keeps dying |
 | [#14](https://github.com/MatthewT1/du-tiny-factory/pull/14) | Cook boards: drive every linked machine, not only slots 1-18 |
 
-**Newer changes** (pull requests pending):
+**Newer changes** (draft PRs in my fork, based on his `dev`):
 
-| Change | PR |
+| PR | Change |
 |---|---|
-| Offer an item only to machines the game says can make it | pending |
-| No re-offering items without a producer list; "confirm item id" row | pending |
-| Catalyst hand-back recipes no longer count as makers | pending |
-| Refused items get two tries, then are not offered to that machine again | pending |
-| Refusal and MISSING report, with screen rows | pending |
-| Set a machine's output only once it has really stopped | pending |
-| By-product filter (Pure Oxygen / Hydrogen) | pending |
-| Away mode | pending |
-| Grey notes strip on the screen | pending |
+| [#15](https://github.com/MatthewT1/du-tiny-factory/pull/15) | databank.hasKey returns true/false, so ingredient requests never worked |
+| [#16](https://github.com/MatthewT1/du-tiny-factory/pull/16) | Chef: report a jammed machine's ingredients just before stopping it |
+| [#17](https://github.com/MatthewT1/du-tiny-factory/pull/17) | Ask again for a missing ingredient, and fetch the full recipe amount |
+| [#18](https://github.com/MatthewT1/du-tiny-factory/pull/18) | Offer an item only to machines the game says can make it |
+| [#19](https://github.com/MatthewT1/du-tiny-factory/pull/19) | Catalyst hand-back recipes no longer count as makers |
+| [#20](https://github.com/MatthewT1/du-tiny-factory/pull/20) | By-product filter (Pure Oxygen / Hydrogen) |
+| [#21](https://github.com/MatthewT1/du-tiny-factory/pull/21) | No re-offering items without a producer list; flag for the screen |
+| [#22](https://github.com/MatthewT1/du-tiny-factory/pull/22) | Refused items get two tries, then are not offered to that machine again |
+| [#23](https://github.com/MatthewT1/du-tiny-factory/pull/23) | Set a machine's output only once it has really stopped |
+| [#24](https://github.com/MatthewT1/du-tiny-factory/pull/24) | Screen: "confirm item id" row |
+| [#25](https://github.com/MatthewT1/du-tiny-factory/pull/25) | Refusal and MISSING report, with screen rows |
+| [#26](https://github.com/MatthewT1/du-tiny-factory/pull/26) | Grey notes strip on the screen |
+| [#27](https://github.com/MatthewT1/du-tiny-factory/pull/27) | Away mode |
+
+#9 and #10 are closed: #11 covers them.
