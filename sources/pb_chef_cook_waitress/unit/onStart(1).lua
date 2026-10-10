@@ -49,7 +49,8 @@ function getStack(industryname, machineId, f)
     for id, item in pairs(requirements) do
         local wanted
         if isATransferUnit(industryname) then
-            wanted = true
+            -- fix: not an item this transfer unit type already refused twice (see noteRefused)
+            wanted = not refused[item.id .. ":" .. tostring(machineId)]
         else
             -- fix: the first look-up of an item asks the game for its recipes; yield after every 10 of those, so the
             -- first walk after a start does not do ~80 look-ups in one tick (CPU limit)
@@ -59,7 +60,9 @@ function getStack(industryname, machineId, f)
             end
             local p = getProducers(item.id)
             if p and machineId then
-                wanted = (p[machineId] == true)
+                -- fix: also not an item this exact machine type refused twice although the game lists it as a maker
+                -- (see noteRefused)
+                wanted = (p[machineId] == true) and not refused[item.id .. ":" .. tostring(machineId)]
             else
                 local known = getKnown(item.id) -- old rule: do we already know this item's proper industry?
                 -- fix: also skip an item this exact machine type already refused (see noteRefused)
@@ -109,10 +112,22 @@ function publishFlagged()
     end
     if n == 0 then databank.clearValue(flaggedKey) else databank.setStringValue(flaggedKey, table.concat(parts, ";")) end
 end
-function noteRefused(item, machineItem)
-    if producers[item.id] ~= false then return end
+-- fix: REFUSALS OF ITEMS THAT DO HAVE A PRODUCER LIST. Only items without a producer list were remembered (above),
+-- so an item whose list names this machine type but which the machine still does not take (for example a catalyst
+-- whose hand-back recipes list a glass furnace) was offered again on every walk, for ever: a steady trickle of
+-- "Unknown Schematic". Now such an item gets two tries per machine type, then it is not offered to that machine type
+-- again until the board restarts. Same for transfer units. `ret` is what setOutput returned: -1 means the machine was
+-- not stopped yet (a stop that waits for the current batch), which is not a refusal, so it does not count.
+strikes = {}
+function noteRefused(item, machineItem, ret)
+    if ret == -1 then return end
     local key = item.id .. ":" .. tostring(machineItem)
     if refused[key] then return end
+    if producers[item.id] ~= false then
+        strikes[key] = (strikes[key] or 0) + 1
+        if strikes[key] >= 2 then refused[key] = true end
+        return
+    end
     refused[key] = true
     refusedCount[item.id] = (refusedCount[item.id] or 0) + 1
     if refusedCount[item.id] >= 3 and flagged[item.id] == nil and getKnown(item.id) == "" then
@@ -262,7 +277,7 @@ function doBuild(slot, industry, f)
             end
 
             y(f)
-            slot.setOutput(item.id)
+            local ret = slot.setOutput(item.id) -- fix: keep the result (-1 = machine still busy)
 
             -- ensure the output item is the wanted id
             y(f)
@@ -305,8 +320,8 @@ function doBuild(slot, industry, f)
                 -- make sure we're not cooking too many, sometimes a bug will put in way too many
                 checkForOverproducing(slot, info)
             else
-                -- fix: the machine did not take the item: remember that (items without a producer list only)
-                noteRefused(item, industry.itemId)
+                -- fix: the machine did not take the item: remember that (see noteRefused)
+                noteRefused(item, industry.itemId, ret)
             end
         end
     end
