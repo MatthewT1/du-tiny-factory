@@ -16,13 +16,21 @@ function adjustIndustryName(text)
     return text
 end
 
+-- fix: in the current game build databank.hasKey() returns true/false, not 1/0, so every `hasKey(k) == 1` test was
+-- always false: the chef wrote every ingredient request into needed1 (each one overwriting the last) and the
+-- transfer units never saw a request. dbHas() accepts both answers.
+function dbHas(k)
+    local v = databank.hasKey(k)
+    return v == true or v == 1
+end
+
 function getStack(industryname)
     local entryStack = newStack()
     if isATransferUnit(industryname) then
         local added = {}
         for count = 1, 30 do
             local ikey = "needed" .. count
-            if databank.hasKey(ikey) == 1 then
+            if dbHas(ikey) then
                 local itemid = databank.getStringValue(ikey)
                 if added[itemid] ~= true then
                     if not (suppress_debug == 1) then system.print("adding need to stack: " .. itemid) end
@@ -221,7 +229,7 @@ needcount = 1
 needs_added = {}
 function addNeed(item)
     if needs_added[item.id] == true then return end
-    while databank.hasKey("needed" .. needcount) == 1 and needcount < 30 do
+    while dbHas("needed" .. needcount) and needcount < 30 do
         needcount = needcount + 1
     end
     if needcount <= 30 then
