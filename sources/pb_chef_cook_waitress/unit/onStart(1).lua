@@ -102,6 +102,32 @@ function getProducers(id)
             end
             return false
         end
+        -- fix: by-products. Pure Oxygen and Pure Hydrogen only come out of ore recipes as a small side product
+        -- (Coal -> 45 Pure Carbon + 7.5 Pure Oxygen + 7.5 Pure Hydrogen), so every refiner was listed as a "maker" of
+        -- them, was offered them and refused. A recipe now only counts if the item is its biggest product (by
+        -- quantity, not by its place in the list) and not a hand-back. If no recipe counts, the rules below are used.
+        local function mainFor(recipe)
+            local mine, most = 0, 0
+            for _, prod in pairs(recipe.products or {}) do
+                if prod.id == id then mine = prod.quantity or 0 end
+                most = math.max(most, prod.quantity or 0)
+            end
+            return mine > 0 and mine >= most and not handBack(recipe)
+        end
+        local main = false
+        for _, recipe in pairs(recipes or {}) do
+            if mainFor(recipe) then main = true end
+        end
+        if main then
+            p = {} -- an item with real recipes but no machine listed is offered to nobody (no guessing)
+            for _, recipe in pairs(recipes) do
+                if mainFor(recipe) then
+                    for _, machineId in pairs(recipe.producers or {}) do p[machineId] = true end
+                end
+            end
+            producers[id] = p
+            return p
+        end
         local keep = false
         for _, recipe in pairs(recipes or {}) do
             if not handBack(recipe) then keep = true end
