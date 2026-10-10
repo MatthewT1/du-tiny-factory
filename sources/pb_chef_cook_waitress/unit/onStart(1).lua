@@ -16,7 +16,13 @@ function adjustIndustryName(text)
     return text
 end
 
-function getStack(industryname)
+-- fix: a machine used to be offered every requirement whose known:<id> was empty or named its kind, and the kind is
+-- the machine name with the tier cut off ("electronics m"). So Basic machines were offered Uncommon-only items, and
+-- items no linked machine can make were offered to every machine on every walk; each refusal shows as
+-- "Unknown Schematic" in the Lua chat. Now an item goes only to machines whose exact type (item id, tier included)
+-- is in the item's recipe producers. If the game gives no producer list for an item, the old known: rule is used.
+-- known: is still written, so boards with the old code keep working next to this one.
+function getStack(industryname, machineId, f)
     local entryStack = newStack()
     if isATransferUnit(industryname) then
         local added = {}
@@ -39,14 +45,144 @@ function getStack(industryname)
         if entryStack.size > 0 then return entryStack end
     end
 
+    local lookups = 0
     for id, item in pairs(requirements) do
-        local known = getKnown(item.id) -- do we already know this item's proper industry?
-
-        if isATransferUnit(industryname) or (known == "" or known == industryname) then
-            entryStack.push(item)
+        local wanted
+        if isATransferUnit(industryname) then
+            -- fix: not an item this transfer unit type already refused twice (see noteRefused)
+            wanted = not refused[item.id .. ":" .. tostring(machineId)]
+        else
+            -- fix: the first look-up of an item asks the game for its recipes; yield after every 10 of those, so the
+            -- first walk after a start does not do ~80 look-ups in one tick (CPU limit)
+            if producers[item.id] == nil then
+                lookups = lookups + 1
+                if f and lookups % 10 == 0 then y(f) end
+            end
+            local p = getProducers(item.id)
+            if p and machineId then
+                -- fix: also not an item this exact machine type refused twice although the game lists it as a maker
+                -- (see noteRefused)
+                wanted = (p[machineId] == true) and not refused[item.id .. ":" .. tostring(machineId)]
+            else
+                local known = getKnown(item.id) -- old rule: do we already know this item's proper industry?
+                -- fix: also skip an item this exact machine type already refused (see noteRefused)
+                wanted = (known == "" or known == industryname) and not refused[item.id .. ":" .. tostring(machineId)]
+            end
         end
+        if wanted then entryStack.push(item) end
     end
     return shuffle(entryStack)
+end
+
+-- fix: producers[itemId] = the set of machine item ids that can make the item (from all of its recipes), or false
+-- when the game gives no producer list. Looked up once per item and kept (a few numbers each).
+producers = {}
+function getProducers(id)
+    local p = producers[id]
+    if p == nil then
+        p = false
+        local recipes = system.getRecipes(id)
+        for _, recipe in pairs(recipes or {}) do
+            for _, machineId in pairs(recipe.producers or {}) do
+                if not p then p = {} end
+                p[machineId] = true
+            end
+        end
+        producers[id] = p
+    end
+    return p
+end
+
+-- fix: ITEMS WITHOUT A PRODUCER LIST. When the game gives no producer list for an item (seen with a wrong item id in
+-- an order), the old known: rule offered it to every kind of machine on every walk; each machine did not take it and
+-- the game printed "Unknown Schematic" in the Lua chat each time.
+-- Now (1) such an item is not offered again to a machine type (exact machine item id) that already refused it, until
+-- the board restarts; (2) once 3 machine types refused it and no machine ever made it, the board writes it to
+-- badids:<board> ("id=Name;...", at most 3), so the screen can say "confirm item id" (the order probably has a wrong
+-- item id). The flag is removed as soon as a machine on this board takes the item, and at every board start.
+refused = {}
+refusedCount = {}
+flagged = {}
+flaggedKey = "badids:" .. unitName:lower()
+function publishFlagged()
+    local parts, n = {}, 0
+    for id, name in pairs(flagged) do
+        n = n + 1
+        if n <= 3 then parts[n] = id .. "=" .. (name:gsub("[;=]", " ")) end
+    end
+    if n == 0 then databank.clearValue(flaggedKey) else databank.setStringValue(flaggedKey, table.concat(parts, ";")) end
+end
+-- fix: REFUSALS OF ITEMS THAT DO HAVE A PRODUCER LIST. Only items without a producer list were remembered (above),
+-- so an item whose list names this machine type but which the machine still does not take (for example a catalyst
+-- whose hand-back recipes list a glass furnace) was offered again on every walk, for ever: a steady trickle of
+-- "Unknown Schematic". Now such an item gets two tries per machine type, then it is not offered to that machine type
+-- again until the board restarts. Same for transfer units. `ret` is what setOutput returned: -1 means the machine was
+-- not stopped yet (a stop that waits for the current batch), which is not a refusal, so it does not count.
+strikes = {}
+function noteRefused(item, machineItem, ret, industryname)
+    if ret == -1 then reportRefusal(item, machineItem, industryname, "busy") return end
+    local key = item.id .. ":" .. tostring(machineItem)
+    if refused[key] then return end
+    if producers[item.id] ~= false then
+        strikes[key] = (strikes[key] or 0) + 1
+        if strikes[key] == 1 then reportRefusal(item, machineItem, industryname) end
+        if strikes[key] >= 2 then refused[key] = true end
+        return
+    end
+    reportRefusal(item, machineItem, industryname)
+    refused[key] = true
+    refusedCount[item.id] = (refusedCount[item.id] or 0) + 1
+    if refusedCount[item.id] >= 3 and flagged[item.id] == nil and getKnown(item.id) == "" then
+        flagged[item.id] = getName(item.id)
+        publishFlagged()
+    end
+end
+-- SAY WHICH ITEM. The game's "Unknown Schematic" line names neither the item nor the machine. When a machine does not
+-- take an item, this board now prints ONE line right after it (the first time per item and machine type; "busy" at
+-- most 3 times per start) with the item, the exact machine and which kind of problem it is:
+--   B = the game lists this machine type as a maker, but it refused -> a TF/game mismatch, not a missing machine
+--   I = the game lists no machine at all for this item id            -> most likely a wrong item id in the orders
+--   N = the game does not list this machine type                     -> TF offered it to the wrong machine (TF bug)
+--   T = a transfer unit refused it
+-- A missing machine tier never shows up here: an item no linked machine can make is never offered. The screen lists
+-- those as MISSING rows. The last 4 B/N/T cases are kept in refused:<board> for the screen ("I" items already get the
+-- screen's "confirm item id" row).
+REFUSED_TEXT = {
+    B = "game lists this machine as a maker -> TF/game mismatch (bug), not a missing machine",
+    I = "game lists NO machine for this id -> wrong item id in the orders?",
+    N = "game does not list this machine -> TF offered it to the wrong machine (TF bug)",
+    T = "transfer unit refused it",
+    busy = "machine was still busy (-1), will try again",
+}
+refusedKey = "refused:" .. unitName:lower()
+reported = {}
+busyPrinted = 0
+function reportRefusal(item, machineItem, industryname, code)
+    if code == "busy" then
+        if busyPrinted >= 3 then return end
+        busyPrinted = busyPrinted + 1
+    else
+        local p = producers[item.id]
+        if isATransferUnit(industryname) then code = "T"
+        elseif p == false then code = "I"
+        elseif p and machineItem and p[machineItem] then code = "B"
+        else code = "N" end
+    end
+    local machine = machineItem and getName(machineItem) or industryname
+    system.print("TF " .. unitName .. ": refused " .. getName(item.id) .. " (" .. item.id .. ") on " .. machine .. ": "
+        .. REFUSED_TEXT[code])
+    if code ~= "busy" and code ~= "I" then
+        reported[#reported + 1] = item.id .. ">" .. tostring(machineItem or 0) .. ">" .. code
+        if #reported > 4 then table.remove(reported, 1) end
+        databank.setStringValue(refusedKey, table.concat(reported, ";"))
+    end
+end
+
+function unflagItem(id)
+    if flagged[id] ~= nil then
+        flagged[id] = nil
+        publishFlagged()
+    end
 end
 
 function checkForOverproducing(slot, info)
@@ -61,7 +197,10 @@ function checkForOverproducing(slot, info)
             maintain = mceil(info.maintainProductAmount)
         end
 
-        if itemId and requirements[itemId] and maintain > (maintainMultiplier * requirements[itemId].quantity) then
+        -- away mode: the limit is the away target (awayTarget)
+        local allowed = itemId and requirements[itemId] and (maintainMultiplier * requirements[itemId].quantity)
+        if allowed and awayMode then allowed = awayTarget(requirements[itemId]) end
+        if allowed and maintain > allowed then
             slot.stop(false, false)
         elseif itemId == nil or requirements[itemId] == nil then
             slot.stop(false, false)
@@ -100,7 +239,12 @@ function doIndustry(slot, f)
         cook_check = cook_check + 1
         while cook_check < 10 do y(f) end -- wait for everyone do be done
 
-        if state ~= IndustryStatus.running then doBuild(slot, industry, f) end
+        -- away mode: one fixed job per machine instead of the normal walk
+        if awayMode then
+            doAway(slot, industry, state, f)
+        elseif state ~= IndustryStatus.running then
+            doBuild(slot, industry, f)
+        end
     else
         cook_check = cook_check + 1
     end
@@ -125,6 +269,9 @@ function checkCooking(slot, industry, f)
         end
     end
 
+    -- away mode: remember the stock this machine reports for its item (the away plan picks the shortest items)
+    local cp = info.currentProducts
+    if cp and cp[1] then noteStock(cp[1].id, info.currentProductAmount) end
     checkForOverproducing(slot, info)
     return state
 end
@@ -139,16 +286,21 @@ function doBuild(slot, industry, f)
     local state = info.state
     local skip = false
 
+    -- fix: one work stack per exact machine type (its item id), so a Basic and an Uncommon machine of the same kind
+    -- no longer share one list. Transfer units keep their shared stack.
+    local stackKey = industryname
+    if isNotATransferUnit(industryname) and industry.itemId then stackKey = industry.itemId end
     local stack
-    if stacks[industryname] == nil or stacks[industryname].size == 0 then
-        stacks[industryname] = getStack(industryname)
+    if stacks[stackKey] == nil or stacks[stackKey].size == 0 then
+        stacks[stackKey] = getStack(industryname, industry.itemId, f)
     end
-    stack = stacks[industryname]
+    stack = stacks[stackKey]
 
     if not (suppress_debug == 1) then system.print("Checking industry for " ..
         industryname .. " with stack size " .. stack.size .. " state: " .. state) end
 
-    while state ~= IndustryStatus.running and skip == false and stack.size > 0 do
+    -- away mode: a walk stops as soon as away mode starts (the away plan then sets this machine)
+    while state ~= IndustryStatus.running and skip == false and stack.size > 0 and not (awayMode and awayPlan == nil) do
         if state == IndustryStatus.no_schemas
             or state == IndustryStatus.running then
             skip = true
@@ -180,7 +332,7 @@ function doBuild(slot, industry, f)
             end
 
             y(f)
-            slot.setOutput(item.id)
+            local ret = slot.setOutput(item.id) -- fix: keep the result (-1 = machine still busy)
 
             -- ensure the output item is the wanted id
             y(f)
@@ -195,6 +347,7 @@ function doBuild(slot, industry, f)
                     " maintaining " .. getName(item.id) .. " x" .. toMaintain) end
 
                 setKnown(industryname, item.id)
+                unflagItem(item.id) -- fix: a machine took it, so drop any "confirm item id" flag
                 -- get the new status, e.g. do we need schematics?
                 y(f)
                 local info = slot.getInfo()
@@ -221,6 +374,9 @@ function doBuild(slot, industry, f)
                 end
                 -- make sure we're not cooking too many, sometimes a bug will put in way too many
                 checkForOverproducing(slot, info)
+            else
+                -- fix: the machine did not take the item: remember that (see noteRefused)
+                noteRefused(item, industry.itemId, ret, industryname)
             end
         end
     end
@@ -237,6 +393,255 @@ function addNeed(item)
         databank.setStringValue("needed" .. needcount, item.id)
         if not (suppress_debug == 1) then system.print(needcount .. " Need: " .. item.id) end
         needs_added[item.id] = true
+    end
+end
+
+-- AWAY MODE. Programming boards stop when the player leaves; machines keep running whatever order they last got (a
+-- maintain order restarts by itself whenever its stock drops). So before leaving, the player taps AWAY on the TF screen
+-- (databank key `away` = the time it was set). Each cook board then gives every free machine ONE job, chosen so that as
+-- many different needed items as possible have a machine, and leaves it there:
+--   1. Machines RUNNING a needed item keep it (stopping one mid-batch would leave it stopped after the batch, with no
+--      board left to restart it). Output full / no container / no schematic machines are left alone.
+--   2. Coverage: every item this board makes gets one free machine if any can make it, the shortest items first (stock
+--      last seen by a machine of this board vs. target; never seen = short; a chef "needed" request = shorter still),
+--      and among equally short items the ones fewest machines can make first. Each item goes to the capable machine
+--      with the fewest choices, so flexible machines stay free for the rest.
+--   3. Machines still free take a second job on the item that is shortest per machine already on it.
+--   4. Targets: linecooks and waitress maintain AWAY_DEPTH x their normal target (bigger buffers while nobody refills
+--      by hand); the chef keeps the order quantity.
+-- While away mode is on (player still there), the boards keep the plan: no re-assigning, the overproduce check allows
+-- the away targets, and a planned machine found stopped is set again. Tapping the screen again (or restarting the
+-- customer board, which restarts the manager, which clears `away`) brings back normal mode: the overproduce check then
+-- stops machines above their normal target and the normal walk gives them work.
+-- Progress: awaystat:<board> = "machines set/machines on this board"; the screen adds them up in its header.
+AWAY_DEPTH = 3
+awayStamp = 0
+awayMode = false
+awayPlan = nil
+awayPlanning = false
+awayDone = {}
+stockSeen = {}
+awayKey = "awaystat:" .. unitName:lower()
+-- while machines are being set, the `next` timer runs every AWAY_FAST_TICK s (a slow board would take several
+-- minutes); back to the board's normal pace once all are set or away mode ends
+AWAY_FAST_TICK = 3
+awayFast = false
+function setPace(fast)
+    if fast == awayFast then return end
+    awayFast = fast
+    unit.stopTimer("next")
+    local normal = nextTime or 1
+    unit.setTimer("next", fast and math.min(normal, AWAY_FAST_TICK) or normal)
+end
+
+-- the maintain target a machine gets in away mode (one function, so the plan and the overproduce check agree)
+function awayTarget(item)
+    if unitkey == "chef" then return mceil(item.quantity * maintainMultiplier) end
+    return mceil(item.quantity * maintainMultiplier * AWAY_DEPTH)
+end
+
+-- stock of an item in this board's hub, as a machine making it reports it (same rescaling as the screen)
+function noteStock(id, amount)
+    if id == nil or amount == nil or amount < 0 then return end
+    amount = mceil(amount)
+    if amount > 99999 then amount = mfloor(amount / 16777216) end
+    stockSeen[id] = amount
+end
+
+function publishAway()
+    local done, total = 0, 0
+    for sid, _ in pairs(industries) do
+        total = total + 1
+        if awayDone[sid] then done = done + 1 end
+    end
+    databank.setStringValue(awayKey, done .. "/" .. total)
+    if done == total then setPace(false) end
+end
+
+-- called by the ping timer: notice the `away` key changing
+function checkAway()
+    local a = databank.getIntValue("away")
+    if a ~= awayStamp then
+        awayStamp = a
+        awayMode = (a > 0)
+        awayPlan, awayDone = nil, {}
+        setPace(awayMode)
+        if awayMode then
+            system.print("TF " .. unitName .. ": AWAY mode - giving every free machine one job")
+        else
+            databank.clearValue(awayKey)
+            system.print("TF " .. unitName .. ": back to normal mode")
+        end
+    end
+    if awayMode then publishAway() end
+end
+
+-- could this machine make the item? Same rule as getStack, except that an item without a producer list is only given
+-- to the machine kind already seen making it (no guessing while nobody is there to watch)
+function canMake(industry, item)
+    if refused[item.id .. ":" .. tostring(industry.itemId)] then return false end
+    if isATransferUnit(industry.name) then return true end
+    local p = getProducers(item.id)
+    if p and industry.itemId then return p[industry.itemId] == true end
+    return getKnown(item.id) == industry.name
+end
+
+function planAway(f)
+    awayPlanning = true
+    local free, cover, running, skipped = {}, {}, 0, 0
+    local looked = 0
+    for sid, ind in pairs(industries) do
+        looked = looked + 1
+        if looked % 4 == 0 then y(f) end
+        local info = ind.slot.getInfo()
+        local cp = info.currentProducts
+        local cur = cp and cp[1] and cp[1].id
+        if info.state == IndustryStatus.running then
+            if cur and requirements[cur] then cover[cur] = (cover[cur] or 0) + 1 end
+            running = running + 1
+        elseif info.state == IndustryStatus.stopped or info.state == IndustryStatus.jammed
+            or info.state == IndustryStatus.pending then
+            free[#free + 1] = ind
+        else
+            skipped = skipped + 1
+        end
+    end
+    -- items some machine reported missing (chef, needed<n>): count as shorter
+    local needed = {}
+    for count = 1, 30 do
+        local v = databank.getStringValue("needed" .. count)
+        if v ~= "" then needed[mfloor(tonumber(v) or 0)] = true end
+    end
+    -- what each free machine type can make
+    local cands, candSet, n = {}, {}, 0
+    for _, ind in ipairs(free) do
+        local tu = isATransferUnit(ind.name)
+        local key = tu and "transfer" or tostring(ind.itemId)
+        if cands[key] == nil then
+            local list, set = {}, {}
+            for id, item in pairs(requirements) do
+                -- a yield after every 10 recipe look-ups (most are cached by the normal walks already)
+                if producers[item.id] == nil and not tu then
+                    n = n + 1
+                    if n % 10 == 0 then y(f) end
+                end
+                if canMake(ind, item) then list[#list + 1] = item; set[id] = true end
+            end
+            cands[key], candSet[key] = list, set
+        end
+        ind.awayKey = key
+    end
+    local capable, pr, order = {}, {}, {}
+    for _, ind in ipairs(free) do
+        for _, item in ipairs(cands[ind.awayKey]) do capable[item.id] = (capable[item.id] or 0) + 1 end
+    end
+    for id, item in pairs(requirements) do
+        local s = stockSeen[id]
+        local v = 1
+        if s then v = math.max(0, 1 - s / math.max(1, item.quantity * maintainMultiplier)) end
+        if needed[id] then v = v + 1 end
+        pr[id] = v
+        if capable[id] then order[#order + 1] = item end
+    end
+    y(f)
+    table.sort(order, function(a, b)
+        if pr[a.id] ~= pr[b.id] then return pr[a.id] > pr[b.id] end
+        if capable[a.id] ~= capable[b.id] then return capable[a.id] < capable[b.id] end
+        return a.id < b.id
+    end)
+    local plan, used, planned = {}, {}, 0
+    -- pass 1: one machine per item nobody covers yet
+    for _, item in ipairs(order) do
+        if not cover[item.id] then
+            local best
+            for _, ind in ipairs(free) do
+                if not used[ind.id] and candSet[ind.awayKey][item.id]
+                    and (best == nil or #cands[ind.awayKey] < #cands[best.awayKey]) then best = ind end
+            end
+            if best then
+                plan[best.id] = { item = item }
+                used[best.id] = true
+                cover[item.id] = 1
+                planned = planned + 1
+            end
+        end
+    end
+    y(f)
+    -- pass 2: the machines left over help on the shortest item per machine already on it
+    for _, ind in ipairs(free) do
+        if not used[ind.id] then
+            local best, bestScore
+            for _, item in ipairs(cands[ind.awayKey]) do
+                local score = pr[item.id] / (1 + (cover[item.id] or 0))
+                if best == nil or score > bestScore then best, bestScore = item, score end
+            end
+            if best then
+                plan[ind.id] = { item = best }
+                used[ind.id] = true
+                cover[best.id] = (cover[best.id] or 0) + 1
+                planned = planned + 1
+            end
+        end
+    end
+    local uncovered = 0
+    for id, _ in pairs(requirements) do
+        if not cover[id] then uncovered = uncovered + 1 end
+    end
+    for _, job in pairs(plan) do job.target = awayTarget(job.item) end
+    system.print("TF " .. unitName .. ": away plan: " .. planned .. " machines get a job, " .. running
+        .. " keep running, " .. (#free - planned + skipped) .. " left as they are; " .. uncovered
+        .. " items have no machine while away (stock only)")
+    if awayMode then awayPlan = plan end
+    awayPlanning = false
+end
+
+-- away mode, one machine: plan once per board, then set this machine's job (or leave it)
+function doAway(slot, industry, state, f)
+    if awayPlan == nil then
+        if awayPlanning then
+            while awayPlanning do y(f) end
+        else
+            planAway(f)
+        end
+        if awayPlan == nil then return end
+    end
+    local sid = industry.id
+    local job = awayPlan[sid]
+    if job == nil then
+        awayDone[sid] = true
+        -- stopped and nothing planned: the normal walk may find work
+        if state == IndustryStatus.stopped then doBuild(slot, industry, f) end
+        return
+    end
+    if awayDone[sid] and state ~= IndustryStatus.stopped then return end -- already set; again only if it stopped
+    if state == IndustryStatus.running then awayDone[sid] = true; return end -- started on its own: leave it running
+    if state ~= IndustryStatus.stopped then
+        y(f)
+        slot.stop(false, false)
+    end
+    y(f)
+    -- a stop that is not forced lets the machine finish its batch: set the job on a later pass, once it has stopped
+    if state ~= IndustryStatus.stopped and slot.getInfo().state ~= IndustryStatus.stopped then return end
+    local ret = slot.setOutput(job.item.id)
+    if ret == -1 then return end -- not stopped yet: next pass
+    y(f)
+    local outputs = slot.getOutputs()
+    if outputs and outputs[1] and outputs[1].id == job.item.id then
+        y(f)
+        slot.startMaintain(job.target)
+        setKnown(industry.name, job.item.id)
+        awayDone[sid] = true
+        if unitname == "chef" then
+            y(f)
+            if slot.getInfo().state == IndustryStatus.jammed then
+                for _, input_item in pairs(slot.getInputs()) do addNeed(input_item) end
+            end
+        end
+    else
+        noteRefused(job.item, industry.itemId, ret, industry.name)
+        awayPlan[sid] = nil
+        awayDone[sid] = true
+        doBuild(slot, industry, f)
     end
 end
 
@@ -270,6 +675,7 @@ end
 pingkey = "ping:" .. unitName
 function ping()
     databank.setIntValue(pingkey, mfloor(system.getArkTime()))
+    checkAway() -- away mode: notice the screen's AWAY button
 end
 
 -- acutal execution starts here
@@ -290,7 +696,10 @@ for slot_name, slot in pairs(unit) do
             industry = {
                 id = slotId,
                 slot = slot,
-                name = adjustIndustryName(slot.getName())
+                name = adjustIndustryName(slot.getName()),
+                -- fix: the exact machine type as an item id (tier and size included). `name` above drops the tier,
+                -- so it cannot tell a Basic machine from an Uncommon one.
+                itemId = slot.getItemId()
             }
             industries[slotId] = industry
             -- table.insert(industries, industry)
@@ -307,6 +716,10 @@ end
 
 databank.setStringValue(unitname .. "_version", chef_linecook_version)
 databank.setStringValue("status:" .. unitname, "active")
+-- fix: clear this board's "confirm item id" flag at start; otherwise a flag stays after the order was corrected.
+-- It is set again within a few minutes if an item is still refused.
+databank.clearValue(flaggedKey)
+databank.clearValue(refusedKey) -- same for the refusal list: this start begins a fresh one
 if not (suppress_debug == 1) then out("INFO: ", unitname, " is alive as type [", unitkey, "]") end
 
 suppress_debug = math.max(0, databank.getIntValue("suppress_debug"))
@@ -385,6 +798,7 @@ local tickRatio = mceil((2.37 / 3.0) * 100) / 100
 local wide_load = math.max(0, (machine_count - 40) / 2)
 local nextTickSeconds = tickRatio * (num_lines + wide_load)
 unit.setTimer("next", nextTickSeconds)
+nextTime = nextTickSeconds -- away mode: the normal pace to return to after the fast ticks
 unit.setTimer("ping", 5)
 
 -- do not change the following

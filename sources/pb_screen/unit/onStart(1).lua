@@ -2,29 +2,139 @@
 unit.hideWidget()
 screen_version = "1.2.3b"
 
-functions = {}
-functions.iterate = function()
-    iterations = 0
-    elementsIdList = core.getElementIdList()
-    unSorted = {}
+-- fix: send EVERY machine to the screen, in pages.
+-- Before: each update built one message of all machines (problems first) and cut it at 1024 characters - the most
+-- a screen accepts in one setScriptInput (a longer one is dropped entirely) - so on a big factory only the first
+-- ~20 machines ever reached the screen. Now one scan builds a short line per machine and packs the lines into
+-- pages that each fit the limit; the update timer sends one page per second, and when all pages are sent the next
+-- scan starts - but never sooner than SCAN_SECONDS after the last one. The screen (screen.lua) keeps every page
+-- and draws all machines. The scan is the expensive part (it asks the game about every element of the construct).
+-- Timing: the update timer used to go through NestCo, whose coroutine wrapper only reaches the scan on every 4th
+-- tick, so the 1 s timer really scanned about every 4 s. The timer now calls screenTick() directly.
+-- Message format (version 2):
+--   #TF2|scan|page|pages|machines|manager version|lines|feed x|line x|description
+--   id,board,machine,state,current,maintain,item        (one line per machine)
+-- board: C = chef, 1-9 = linecook number, W = waitress. state: R running, W missing ingredient, F output full,
+-- N no output container, P pending, I stopped, S no schematic, ? anything else.
+SCREEN_MAX_INPUT = 1000 -- bytes per page; the game limit is about 1024, keep a margin
+SCAN_SECONDS = 12       -- shortest time between two scans of the construct (the screen refreshes this often)
 
-    for index, id in ipairs(elementsIdList) do
-        local class = core.getElementClassById(id):sub(0, 8):lower()
-        local name = getName(core.getElementItemIdById(id), true)
-        if class == "industry" then
-            info = core.getElementIndustryInfoById(id)
+local STATE_CODE = {
+    [UNIT_STOPPED] = "I", [UNIT_WORKING] = "R", [UNIT_JAMMED] = "W", [UNIT_FULL_STORAGE] = "F",
+    [UNIT_BAD_CFG] = "N", [UNIT_WAITING] = "P", [UNIT_NO_SCHEMAS] = "S",
+}
+
+local function boardCode(line)
+    if line == "chef" then return "C" end
+    if line == "waitress" then return "W" end
+    local n = line:match("^||(%d+)$") -- getLine() turns "linecook3" into "||3"
+    return n or line:gsub("[,|]", "")
+end
+
+scanNo = 0
+pages = {}
+pageNo = 0
+lastScan = -1000000
+
+-- MISSING MACHINES. A cook board only offers an item to machines the game lists as able to make it, so an item that
+-- no TF machine can make (wrong tier: e.g. Warp Drive L needs an Uncommon or better Assembly Line L on the chef) is
+-- silently never made. The screen checks every item of the chef list (needs a chef machine) and of the linecook list
+-- (needs a linecook or waitress machine) against the exact machine types linked to those boards, and adds a MISSING
+-- row naming the cheapest machine that could make it. Same producer rules as the cook boards: hand-back recipes and
+-- by-products do not count. Recipes are asked once per item, at most 10 new items per scan (CPU), so the full list
+-- appears within a couple of minutes after a start.
+prodOf = {}    -- item id -> list of machine item ids that can make it, or false
+needName = {}  -- item id -> short name of the lowest-tier machine that can make it
+function producersOf(id)
+    local recipes = system.getRecipes(id) or {}
+    local function handBack(recipe)
+        for _, ing in pairs(recipe.ingredients or {}) do
+            if ing.id == id then return true end
+        end
+        return false
+    end
+    local function mainFor(recipe)
+        local mine, most = 0, 0
+        for _, prod in pairs(recipe.products or {}) do
+            if prod.id == id then mine = prod.quantity or 0 end
+            most = math.max(most, prod.quantity or 0)
+        end
+        return mine > 0 and mine >= most and not handBack(recipe)
+    end
+    local main, keep = false, false
+    for _, recipe in pairs(recipes) do
+        if mainFor(recipe) then main = true end
+        if not handBack(recipe) then keep = true end
+    end
+    local list, seen = {}, {}
+    for _, recipe in pairs(recipes) do
+        if (main and mainFor(recipe)) or (not main and (not keep or not handBack(recipe))) then
+            for _, mid in pairs(recipe.producers or {}) do
+                if not seen[mid] then seen[mid] = true; list[#list + 1] = mid end
+            end
+        end
+    end
+    if #list == 0 then return false end
+    return list
+end
+function lowestMachine(id, list)
+    if needName[id] == nil then
+        local best, bestTier = "?", nil
+        for _, mid in ipairs(list) do
+            local it = system.getItem(mid)
+            local t = tonumber(it.tier) or 99
+            if bestTier == nil or t < bestTier then best, bestTier = it.locDisplayNameWithSize or "?", t end
+        end
+        needName[id] = (best:gsub(" Line", ""):gsub(" Unit", ""):gsub(" Industry", ""):gsub(",", ""))
+    end
+    return needName[id]
+end
+function addMissingRows(rows, types)
+    local budget, shown = 10, 0
+    local function check(list, have, code)
+        for _, it in pairs(list or {}) do
+            local id = tonumber(it.id)
+            if id and prodOf[id] == nil and budget > 0 then
+                budget = budget - 1
+                prodOf[id] = producersOf(id)
+            end
+            local p = id and prodOf[id]
+            if p then
+                local ok = false
+                for _, mid in ipairs(p) do
+                    if have[mid] then ok = true; break end
+                end
+                if not ok and shown < 8 then
+                    shown = shown + 1
+                    rows[#rows + 1] = "m" .. id .. "," .. code .. "," .. lowestMachine(id, p) .. ",M,0,"
+                        .. mceil(tonumber(it.quantity) or 0) .. "," .. (getName(id, false):gsub(",", ""))
+                end
+            end
+        end
+    end
+    check(manager_items, types.chef, "C")
+    check(linecook_items, types.line, "L")
+end
+-- short texts for the cook boards' refusal codes (see reportRefusal on the cook boards)
+REFUSED_SHORT = { B = "game says it can: bug?", N = "wrong machine: TF bug", T = "transfer unit refused" }
+
+function scanFactory()
+    local rows = {}
+    local types = { chef = {}, line = {} } -- exact machine types linked to TF boards
+    for _, id in ipairs(core.getElementIdList()) do
+        if core.getElementClassById(id):sub(0, 8):lower() == "industry" then
+            local info = core.getElementIndustryInfoById(id)
             local outputs = info.currentProducts
+            -- note every TF machine's exact type, also when it has no output set yet
+            local lineOf = getLine(id)
+            if lineOf ~= "" then
+                local mid = core.getElementItemIdById(id)
+                if lineOf == "chef" then types.chef[mid] = true else types.line[mid] = true end
+            end
             if outputs and outputs[1] and outputs[1].id then
-                local itemId = outputs[1].id
-                local current = 0
-                local maintain = 0
-                local itemname = getName(itemId, false)
-                local state = info.state
-                system.print(state .. " - " .. itemname)
-
-                if false and state ~= UNIT_WORKING and (manager_items[itemId] == nil and manager_items["" .. itemID] == nil) and (linecook_items[itemId] == nil and linecook_items["" .. itemId] == nil) then
-                    -- this machine is doing nothing that we care about, so ignore it
-                else
+                local currentLineID = lineOf
+                if currentLineID ~= "" then
+                    local current, maintain = 0, 0
                     if info.currentProductAmount > 0 then
                         current = mceil(info.currentProductAmount)
                         if current > 99999 then
@@ -34,123 +144,117 @@ functions.iterate = function()
                     if info.maintainProductAmount > 0 then
                         maintain = mceil(info.maintainProductAmount)
                     end
-
-                    if state == UNIT_STOPPED then
-                        state = "`I"
-                    elseif state == UNIT_WORKING then
-                        state = "`R"
-                    elseif state == UNIT_JAMMED then
-                        state = "`W"
-                    elseif state == UNIT_FULL_STORAGE or state == UNIT_BAD_CFG then
-                        state = "`J"
-                    elseif state == UNIT_WAITING then
-                        state = "`P"
-                    elseif state == UNIT_NO_SCHEMAS then
-                        state = "!!"
-                    else
-                        state = "?UNKNOWN?"
-                    end
-
-                    local currentLineID = getLine(id)
-                    if currentLineID ~= "" then
-                        table.insert(unSorted,
-                            currentLineID
-                            .. "," .. name
-                            .. "," .. state
-                            .. "," .. current
-                            .. "," .. maintain
-                            .. "," .. itemname
-                        )
-                    end
+                    -- "Assembly Line L" -> "Assembly L", "Transfer Unit L" -> "Transfer L": shorter lines, more per page
+                    local machine = getName(core.getElementItemIdById(id), true):gsub(" Line", ""):gsub(" Unit", ""):gsub(",", "")
+                    rows[#rows + 1] = id .. "," .. boardCode(currentLineID) .. "," .. machine .. ","
+                        .. (STATE_CODE[info.state] or "?") .. "," .. current .. "," .. maintain .. ","
+                        .. getName(outputs[1].id, false)
                 end
             end
         end
+    end
 
-        iterations = iterations + 1
-        if iterations >= 50 then
-            iterations = 0
-            -- coroutine.yield(functions.iterate)
+    databank.setIntValue("machine_count", #rows)
+
+    -- fix: a cook board that found an item no machine will take (the game lists no recipe for it, refused by 3 machine
+    -- types) writes it to badids:<board> ("id=Name;..."). Each one becomes an extra row at the top of the screen (red
+    -- "NO SCHEM" state, ERROR in the machine column) saying to check that item id in the customer board. Same row
+    -- format as a machine, so screen.lua needs no change. Boards that do not write the key change nothing here.
+    local askBoards, seenBad = { "chef", "waitress" }, {}
+    for n = 1, num_lines do askBoards[#askBoards + 1] = "linecook" .. n end
+    for _, bname in ipairs(askBoards) do
+        local v = databank.getStringValue("badids:" .. bname)
+        if v ~= "" then
+            for id, name in v:gmatch("(%d+)=([^;]*)") do
+                if not seenBad[id] then
+                    seenBad[id] = true
+                    rows[#rows + 1] = "e" .. id .. ",!,ERROR,S,0,0,confirm item id: " .. (name:gsub(",", ""))
+                        .. " (" .. id .. ")"
+                end
+            end
+        end
+        -- the last refusals of this board ("item>machine>code;..."): one REFUSED row each
+        for item, mid, code in databank.getStringValue("refused:" .. bname):gmatch("(%d+)>(%d+)>(%a)") do
+            local machine = (getName(tonumber(mid), true):gsub(" Line", ""):gsub(" Unit", ""):gsub(",", ""))
+            rows[#rows + 1] = "x" .. item .. "_" .. mid .. "," .. boardCode((bname:gsub("linecook", "||"))) .. ","
+                .. machine .. ",X,0,0," .. (getName(tonumber(item), false):gsub(",", "")) .. " - "
+                .. (REFUSED_SHORT[code] or code)
         end
     end
+    addMissingRows(rows, types)
 
-    --- screen display by priority START ---
-    local screenRows = {}
-    screenRows['white'] = {}
-    screenRows['green'] = {}
-    screenRows['yellow'] = {}
-    screenRows['red'] = {}
-
-    for _, text in pairs(unSorted) do
-        split = stringToTable(text, ",")
-        local typicalData = true
-        if split[3] == "`R" then
-            table.insert(screenRows.green, text)
-            typicalData = false
+    -- away mode for the header: "-" = normal mode, else "<machines set>/<machines>" over all boards
+    local awayText = "-"
+    if databank.getIntValue("away") > 0 then
+        local done, total = 0, 0
+        for _, bname in ipairs(askBoards) do
+            local d, t = databank.getStringValue("awaystat:" .. bname):match("^(%d+)/(%d+)$")
+            if d then done = done + tonumber(d); total = total + tonumber(t) end
         end
-        if split[3] == "!!" or split[3] == "`J" then
-            table.insert(screenRows.yellow, text)
-            typicalData = false
+        awayText = done .. "/" .. total
+    end
+
+    scanNo = scanNo + 1
+    local desc = (factory_desc or ""):gsub("[|\n]", " "):sub(1, 40)
+    local function header(page, count)
+        return "#TF2|" .. scanNo .. "|" .. page .. "|" .. count .. "|" .. #rows .. "|" .. manager_version .. "|"
+            .. num_lines .. "|" .. feed_multiplier .. "|" .. line_multiplier .. "|" .. desc .. "|" .. awayText
+    end
+    local room = SCREEN_MAX_INPUT - #header(99, 99) - 1 -- header size with the widest page numbers
+
+    -- pack rows into pages
+    local chunks, chunk, size = {}, {}, 0
+    for _, row in ipairs(rows) do
+        if size + #row + 1 > room and #chunk > 0 then
+            chunks[#chunks + 1] = chunk
+            chunk, size = {}, 0
         end
-        if split[2] == "Refiner" and split[3] == '`W' then
-            table.insert(screenRows.red, text)
-            typicalData = false
-        end
-        if typicalData then table.insert(screenRows.white, text) end
+        chunk[#chunk + 1] = row
+        size = size + #row + 1
     end
+    chunks[#chunks + 1] = chunk -- the last page (or one empty page when there are no machines)
 
-    table.sort(screenRows.red)
-    table.sort(screenRows.yellow)
-    table.sort(screenRows.green)
-    table.sort(screenRows.white)
-
-    shuffledWhite = {}
-    for i, record in ipairs(screenRows.white) do
-        local pos = math.random(1, #shuffledWhite + 1)
-        table.insert(shuffledWhite, pos, record)
+    pages = {}
+    for i, c in ipairs(chunks) do
+        pages[i] = header(i, #chunks) .. "\n" .. table.concat(c, "\n")
     end
-
-    local priorityTable = {}
-    for _, data in pairs(screenRows.red) do
-        table.insert(priorityTable, data)
-    end
-    for _, data in pairs(screenRows.yellow) do
-        table.insert(priorityTable, data)
-    end
-    for _, data in pairs(screenRows.green) do
-        table.insert(priorityTable, data)
-    end
-    for _, data in pairs(shuffledWhite) do
-        table.insert(priorityTable, data)
-    end
-    --- screen display by priority END ---
-
-    output = ""
-    header_block = ""
-    total = 0
-    eol = "\n"
-
-    header_block = manager_version .. eol .. num_lines .. eol .. feed_multiplier .. eol
-    header_block = header_block .. line_multiplier .. eol .. #unSorted .. eol
-    header_block = header_block .. factory_desc .. eol
-
-    databank.setIntValue("machine_count", #unSorted)
-
-    output = header_block
-    message_size_left = 1024 - #header_block
-
-    for i, line in pairs(priorityTable) do
-        local len = string.len(line) + 1
-        if total + len <= message_size_left then
-            output = output .. line .. eol
-            total = total + len
-        end
-    end
-
-    if output == "" then output = " ... pending ... " end
+    pageNo = 0
     screen.activate()
-    screen.setScriptInput(output)
-    system.print("output set")
 end
+
+-- AWAY BUTTON. screen.lua draws an AWAY button in its header; after a confirm tap it sends "TF_AWAY_ON" or
+-- "TF_AWAY_OFF". This board turns that into the databank key `away` (the time it was set), which every cook board
+-- watches, and rescans at once so the header shows the new state.
+function checkTap()
+    local out = screen.getScriptOutput()
+    if out == nil or out == "" then return end
+    screen.clearScriptOutput()
+    if out == "TF_AWAY_ON" then
+        databank.setIntValue("away", mfloor(system.getArkTime()))
+        system.print("TF screen: AWAY mode on - wait until the header says all machines are set, then leave")
+    elseif out == "TF_AWAY_OFF" then
+        databank.clearValue("away")
+        system.print("TF screen: AWAY mode off - back to normal")
+    else
+        return
+    end
+    lastScan = -1000000
+    pageNo = #pages
+end
+
+function screenTick()
+    checkTap()
+    if pageNo >= #pages then
+        local now = system.getArkTime()
+        if now - lastScan < SCAN_SECONDS then return end
+        lastScan = now
+        scanFactory()
+    end
+    pageNo = pageNo + 1
+    screen.setScriptInput(pages[pageNo])
+end
+
+functions = {} -- NestCo (below) is still created as before, but nothing calls NestCo.update() any more
 
 lines = {}
 function getLine(id)
@@ -204,5 +308,6 @@ end; function nestco:_init() for c, d in pairs(self.functions) do self.coroutine
 end
 
 NestCo = nestco:new(functions)
+-- fix: onTimer(update) now calls screenTick(): one page per second; the scan runs at most every SCAN_SECONDS
 unit.setTimer("update", 1)
 -- do not chang the above
