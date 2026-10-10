@@ -175,6 +175,14 @@ function doBuild(slot, industry, f)
                         industryname .. " with state running:" .. tostring(state == IndustryStatus.running))
                 end
                 y(f)
+                -- fix: right after startMaintain the game reports "pending", and "missing ingredient" (jammed)
+                -- only shows a few seconds later, so the check after the start below never saw it. Look once more
+                -- just before stopping the machine: if it is missing an ingredient, report what it needs first.
+                if unitname == "chef" and slot.getInfo().state == IndustryStatus.jammed then
+                    for _, input_item in pairs(slot.getInputs()) do
+                        addNeed(input_item)
+                    end
+                end
                 slot.stop(false, false)
             end
 
