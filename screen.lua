@@ -74,14 +74,20 @@ local function readInput(input)
     for line in input:gmatch("[^\n]+") do
         if first then
             first = false
-            -- #TF2|scan|page|pages|machines|manager version|lines|feed x|line x|description
-            local s, p, ps, n, mv, nl, fm, lm, desc =
-                line:match("^#TF2|(%d+)|(%d+)|(%d+)|(%d+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+            -- #TF2|scan|page|pages|machines|manager version|lines|feed x|line x|description|away
+            -- away mode: the 10th field is the away state ("-" = normal, else "set/total"); older boards send 9
+            local s, p, ps, n, mv, nl, fm, lm, desc, away =
+                line:match("^#TF2|(%d+)|(%d+)|(%d+)|(%d+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+            if not s then
+                s, p, ps, n, mv, nl, fm, lm, desc =
+                    line:match("^#TF2|(%d+)|(%d+)|(%d+)|(%d+)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+            end
             if not s then return end -- not our format (e.g. " ... pending ... ")
             scan, page, pages = tonumber(s), tonumber(p), tonumber(ps)
             if scan < TF.scan then TF.rows = {} end -- the board restarted: its scan counter began again
             TF.scan = scan
-            TF.meta = { machines = tonumber(n), manager = mv, lines = nl, feed = fm, linex = lm, desc = desc }
+            TF.meta = { machines = tonumber(n), manager = mv, lines = nl, feed = fm, linex = lm, desc = desc,
+                away = away }
         else
             -- id,board,machine,state,current,maintain,item (the item name takes the rest, commas and all)
             local id, b, m, st, cur, max, item = line:match("^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.*)$")
@@ -183,6 +189,43 @@ for _, s in ipairs({ { counts.good, "running", C.green }, { counts.wait, "waitin
     local label = s[1] .. " " .. s[2]
     text(fSmall, label, x + dot * 3, row2, (s[1] > 0 or s[3] == C.green) and C.text or C.dim)
     x = x + dot * 3 + getTextBounds(fSmall, label) + pad * 2
+end
+
+-- AWAY button, header right. Tap once to arm (5 s), tap again to confirm; the board then switches every cook board
+-- to away mode (one fixed job per machine) or back. While away mode is on the header says how many machines are set:
+-- leave when it reads e.g. "AWAY ON 75/75".
+if m and m.away then
+    local now = getTime()
+    local on = (m.away ~= "-")
+    local armed = TF.armUntil and now < TF.armUntil
+    if TF.sentAt and now - TF.sentAt > 20 then TF.sentAt = nil end -- no answer from the board in 20 s: allow again
+    local label, col
+    if TF.sentAt and ((TF.sentOn and not on) or (not TF.sentOn and on)) then
+        label, col = "SWITCHING...", C.yellow
+    elseif armed then
+        label, col = on and "TAP AGAIN: RESUME NORMAL" or "TAP AGAIN: GO AWAY", C.yellow
+    elseif on then
+        label, col = "AWAY ON " .. m.away .. " SET - TAP TO RESUME", C.red
+    else
+        label, col = "AWAY MODE", C.dim
+    end
+    local bw = getTextBounds(fSmall, label) + pad * 1.5
+    local bh = headH * 0.36
+    local bx, by = rx - pad - bw, row2 - bh / 2
+    fill(lBack, { col[1], col[2], col[3], 0.18 })
+    addBox(lBack, bx, by, bw, bh)
+    text(fSmall, label, bx + bw / 2, row2, col, AlignH_Center)
+    local cx, cy = getCursor()
+    if getCursorReleased() and cx >= bx and cx <= bx + bw and cy >= by and cy <= by + bh then
+        if armed then
+            setOutput(on and "TF_AWAY_OFF" or "TF_AWAY_ON")
+            TF.armUntil, TF.sentAt, TF.sentOn = nil, now, not on
+        else
+            TF.armUntil = now + 5
+        end
+    end
+    if TF.sentAt and ((TF.sentOn and on) or (not TF.sentOn and not on)) then TF.sentAt = nil end -- the board answered
+    if cx >= 0 or armed or TF.sentAt then requestAnimationFrame(10) end -- react to taps quickly while someone is here
 end
 
 -- Footer: hub labels, centred on equal-width slots (same places as the old screen)
