@@ -36,14 +36,103 @@ pages = {}
 pageNo = 0
 lastScan = -1000000
 
+-- MISSING MACHINES. A cook board only offers an item to machines the game lists as able to make it, so an item that
+-- no TF machine can make (wrong tier: e.g. Warp Drive L needs an Uncommon or better Assembly Line L on the chef) is
+-- silently never made. The screen checks every item of the chef list (needs a chef machine) and of the linecook list
+-- (needs a linecook or waitress machine) against the exact machine types linked to those boards, and adds a MISSING
+-- row naming the cheapest machine that could make it. Same producer rules as the cook boards: hand-back recipes and
+-- by-products do not count. Recipes are asked once per item, at most 10 new items per scan (CPU), so the full list
+-- appears within a couple of minutes after a start.
+prodOf = {}    -- item id -> list of machine item ids that can make it, or false
+needName = {}  -- item id -> short name of the lowest-tier machine that can make it
+function producersOf(id)
+    local recipes = system.getRecipes(id) or {}
+    local function handBack(recipe)
+        for _, ing in pairs(recipe.ingredients or {}) do
+            if ing.id == id then return true end
+        end
+        return false
+    end
+    local function mainFor(recipe)
+        local mine, most = 0, 0
+        for _, prod in pairs(recipe.products or {}) do
+            if prod.id == id then mine = prod.quantity or 0 end
+            most = math.max(most, prod.quantity or 0)
+        end
+        return mine > 0 and mine >= most and not handBack(recipe)
+    end
+    local main, keep = false, false
+    for _, recipe in pairs(recipes) do
+        if mainFor(recipe) then main = true end
+        if not handBack(recipe) then keep = true end
+    end
+    local list, seen = {}, {}
+    for _, recipe in pairs(recipes) do
+        if (main and mainFor(recipe)) or (not main and (not keep or not handBack(recipe))) then
+            for _, mid in pairs(recipe.producers or {}) do
+                if not seen[mid] then seen[mid] = true; list[#list + 1] = mid end
+            end
+        end
+    end
+    if #list == 0 then return false end
+    return list
+end
+function lowestMachine(id, list)
+    if needName[id] == nil then
+        local best, bestTier = "?", nil
+        for _, mid in ipairs(list) do
+            local it = system.getItem(mid)
+            local t = tonumber(it.tier) or 99
+            if bestTier == nil or t < bestTier then best, bestTier = it.locDisplayNameWithSize or "?", t end
+        end
+        needName[id] = (best:gsub(" Line", ""):gsub(" Unit", ""):gsub(" Industry", ""):gsub(",", ""))
+    end
+    return needName[id]
+end
+function addMissingRows(rows, types)
+    local budget, shown = 10, 0
+    local function check(list, have, code)
+        for _, it in pairs(list or {}) do
+            local id = tonumber(it.id)
+            if id and prodOf[id] == nil and budget > 0 then
+                budget = budget - 1
+                prodOf[id] = producersOf(id)
+            end
+            local p = id and prodOf[id]
+            if p then
+                local ok = false
+                for _, mid in ipairs(p) do
+                    if have[mid] then ok = true; break end
+                end
+                if not ok and shown < 8 then
+                    shown = shown + 1
+                    rows[#rows + 1] = "m" .. id .. "," .. code .. "," .. lowestMachine(id, p) .. ",M,0,"
+                        .. mceil(tonumber(it.quantity) or 0) .. "," .. (getName(id, false):gsub(",", ""))
+                end
+            end
+        end
+    end
+    check(manager_items, types.chef, "C")
+    check(linecook_items, types.line, "L")
+end
+-- short texts for the cook boards' refusal codes (see reportRefusal on the cook boards)
+REFUSED_SHORT = { B = "game says it can: bug?", N = "wrong machine: TF bug", T = "transfer unit refused" }
+
 function scanFactory()
     local rows = {}
+    local types = { chef = {}, line = {} } -- exact machine types linked to TF boards
     for _, id in ipairs(core.getElementIdList()) do
         if core.getElementClassById(id):sub(0, 8):lower() == "industry" then
             local info = core.getElementIndustryInfoById(id)
             local outputs = info.currentProducts
+            -- note every TF machine's exact type, also when it has no output set yet
+            local lineOf = getLine(id)
+            if lineOf ~= "" then
+                local mid = core.getElementItemIdById(id)
+                if lineOf == "chef" then types.chef[mid] = true else types.line[mid] = true end
+            end
             if outputs and outputs[1] and outputs[1].id then
-                local currentLineID = getLine(id)
+                local currentLineID = lineOf
                 if currentLineID ~= "" then
                     local current, maintain = 0, 0
                     if info.currentProductAmount > 0 then
@@ -84,7 +173,15 @@ function scanFactory()
                 end
             end
         end
+        -- the last refusals of this board ("item>machine>code;..."): one REFUSED row each
+        for item, mid, code in databank.getStringValue("refused:" .. bname):gmatch("(%d+)>(%d+)>(%a)") do
+            local machine = (getName(tonumber(mid), true):gsub(" Line", ""):gsub(" Unit", ""):gsub(",", ""))
+            rows[#rows + 1] = "x" .. item .. "_" .. mid .. "," .. boardCode((bname:gsub("linecook", "||"))) .. ","
+                .. machine .. ",X,0,0," .. (getName(tonumber(item), false):gsub(",", "")) .. " - "
+                .. (REFUSED_SHORT[code] or code)
+        end
     end
+    addMissingRows(rows, types)
 
     scanNo = scanNo + 1
     local desc = (factory_desc or ""):gsub("[|\n]", " "):sub(1, 40)

@@ -175,15 +175,17 @@ end
 -- again until the board restarts. Same for transfer units. `ret` is what setOutput returned: -1 means the machine was
 -- not stopped yet (a stop that waits for the current batch), which is not a refusal, so it does not count.
 strikes = {}
-function noteRefused(item, machineItem, ret)
-    if ret == -1 then return end
+function noteRefused(item, machineItem, ret, industryname)
+    if ret == -1 then reportRefusal(item, machineItem, industryname, "busy") return end
     local key = item.id .. ":" .. tostring(machineItem)
     if refused[key] then return end
     if producers[item.id] ~= false then
         strikes[key] = (strikes[key] or 0) + 1
+        if strikes[key] == 1 then reportRefusal(item, machineItem, industryname) end
         if strikes[key] >= 2 then refused[key] = true end
         return
     end
+    reportRefusal(item, machineItem, industryname)
     refused[key] = true
     refusedCount[item.id] = (refusedCount[item.id] or 0) + 1
     if refusedCount[item.id] >= 3 and flagged[item.id] == nil and getKnown(item.id) == "" then
@@ -191,6 +193,47 @@ function noteRefused(item, machineItem, ret)
         publishFlagged()
     end
 end
+-- SAY WHICH ITEM. The game's "Unknown Schematic" line names neither the item nor the machine. When a machine does not
+-- take an item, this board now prints ONE line right after it (the first time per item and machine type; "busy" at
+-- most 3 times per start) with the item, the exact machine and which kind of problem it is:
+--   B = the game lists this machine type as a maker, but it refused -> a TF/game mismatch, not a missing machine
+--   I = the game lists no machine at all for this item id            -> most likely a wrong item id in the orders
+--   N = the game does not list this machine type                     -> TF offered it to the wrong machine (TF bug)
+--   T = a transfer unit refused it
+-- A missing machine tier never shows up here: an item no linked machine can make is never offered. The screen lists
+-- those as MISSING rows. The last 4 B/N/T cases are kept in refused:<board> for the screen ("I" items already get the
+-- screen's "confirm item id" row).
+REFUSED_TEXT = {
+    B = "game lists this machine as a maker -> TF/game mismatch (bug), not a missing machine",
+    I = "game lists NO machine for this id -> wrong item id in the orders?",
+    N = "game does not list this machine -> TF offered it to the wrong machine (TF bug)",
+    T = "transfer unit refused it",
+    busy = "machine was still busy (-1), will try again",
+}
+refusedKey = "refused:" .. unitName:lower()
+reported = {}
+busyPrinted = 0
+function reportRefusal(item, machineItem, industryname, code)
+    if code == "busy" then
+        if busyPrinted >= 3 then return end
+        busyPrinted = busyPrinted + 1
+    else
+        local p = producers[item.id]
+        if isATransferUnit(industryname) then code = "T"
+        elseif p == false then code = "I"
+        elseif p and machineItem and p[machineItem] then code = "B"
+        else code = "N" end
+    end
+    local machine = machineItem and getName(machineItem) or industryname
+    system.print("TF " .. unitName .. ": refused " .. getName(item.id) .. " (" .. item.id .. ") on " .. machine .. ": "
+        .. REFUSED_TEXT[code])
+    if code ~= "busy" and code ~= "I" then
+        reported[#reported + 1] = item.id .. ">" .. tostring(machineItem or 0) .. ">" .. code
+        if #reported > 4 then table.remove(reported, 1) end
+        databank.setStringValue(refusedKey, table.concat(reported, ";"))
+    end
+end
+
 function unflagItem(id)
     if flagged[id] ~= nil then
         flagged[id] = nil
@@ -385,7 +428,7 @@ function doBuild(slot, industry, f)
                 checkForOverproducing(slot, info)
             else
                 -- fix: the machine did not take the item: remember that (see noteRefused)
-                noteRefused(item, industry.itemId, ret)
+                noteRefused(item, industry.itemId, ret, industryname)
             end
         end
     end
@@ -507,6 +550,7 @@ databank.setStringValue("status:" .. unitname, "active")
 -- fix: clear this board's "confirm item id" flag at start; otherwise a flag stays after the order was corrected.
 -- It is set again within a few minutes if an item is still refused.
 databank.clearValue(flaggedKey)
+databank.clearValue(refusedKey) -- same for the refusal list: this start begins a fresh one
 if not (suppress_debug == 1) then out("INFO: ", unitname, " is alive as type [", unitkey, "]") end
 
 suppress_debug = math.max(0, databank.getIntValue("suppress_debug"))
