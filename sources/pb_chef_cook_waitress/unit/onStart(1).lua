@@ -16,7 +16,13 @@ function adjustIndustryName(text)
     return text
 end
 
-function getStack(industryname)
+-- fix: a machine used to be offered every requirement whose known:<id> was empty or named its kind, and the kind is
+-- the machine name with the tier cut off ("electronics m"). So Basic machines were offered Uncommon-only items, and
+-- items no linked machine can make were offered to every machine on every walk; each refusal shows as
+-- "Unknown Schematic" in the Lua chat. Now an item goes only to machines whose exact type (item id, tier included)
+-- is in the item's recipe producers. If the game gives no producer list for an item, the old known: rule is used.
+-- known: is still written, so boards with the old code keep working next to this one.
+function getStack(industryname, machineId, f)
     local entryStack = newStack()
     if isATransferUnit(industryname) then
         local added = {}
@@ -39,14 +45,64 @@ function getStack(industryname)
         if entryStack.size > 0 then return entryStack end
     end
 
+    local lookups = 0
     for id, item in pairs(requirements) do
-        local known = getKnown(item.id) -- do we already know this item's proper industry?
-
-        if isATransferUnit(industryname) or (known == "" or known == industryname) then
-            entryStack.push(item)
+        local wanted
+        if isATransferUnit(industryname) then
+            wanted = true
+        else
+            -- fix: the first look-up of an item asks the game for its recipes; yield after every 10 of those, so the
+            -- first walk after a start does not do ~80 look-ups in one tick (CPU limit)
+            if producers[item.id] == nil then
+                lookups = lookups + 1
+                if f and lookups % 10 == 0 then y(f) end
+            end
+            local p = getProducers(item.id)
+            if p and machineId then
+                wanted = (p[machineId] == true)
+            else
+                local known = getKnown(item.id) -- old rule: do we already know this item's proper industry?
+                wanted = (known == "" or known == industryname)
+            end
         end
+        if wanted then entryStack.push(item) end
     end
     return shuffle(entryStack)
+end
+
+-- fix: producers[itemId] = the set of machine item ids that can make the item (from all of its recipes), or false
+-- when the game gives no producer list. Looked up once per item and kept (a few numbers each).
+producers = {}
+function getProducers(id)
+    local p = producers[id]
+    if p == nil then
+        p = false
+        local recipes = system.getRecipes(id)
+        -- fix: catalysts (and anything like them) have one recipe that makes the item from scratch and several
+        -- "hand-back" recipes that take the item IN as an ingredient and return it while making something else (glass,
+        -- alloys). A machine that runs a hand-back recipe is not a maker of the item: skip those recipes, unless every
+        -- recipe is hand-back (then keep them all, as before).
+        local function handBack(recipe)
+            for _, ing in pairs(recipe.ingredients or {}) do
+                if ing.id == id then return true end
+            end
+            return false
+        end
+        local keep = false
+        for _, recipe in pairs(recipes or {}) do
+            if not handBack(recipe) then keep = true end
+        end
+        for _, recipe in pairs(recipes or {}) do
+            if not keep or not handBack(recipe) then
+                for _, machineId in pairs(recipe.producers or {}) do
+                    if not p then p = {} end
+                    p[machineId] = true
+                end
+            end
+        end
+        producers[id] = p
+    end
+    return p
 end
 
 function checkForOverproducing(slot, info)
@@ -139,11 +195,15 @@ function doBuild(slot, industry, f)
     local state = info.state
     local skip = false
 
+    -- fix: one work stack per exact machine type (its item id), so a Basic and an Uncommon machine of the same kind
+    -- no longer share one list. Transfer units keep their shared stack.
+    local stackKey = industryname
+    if isNotATransferUnit(industryname) and industry.itemId then stackKey = industry.itemId end
     local stack
-    if stacks[industryname] == nil or stacks[industryname].size == 0 then
-        stacks[industryname] = getStack(industryname)
+    if stacks[stackKey] == nil or stacks[stackKey].size == 0 then
+        stacks[stackKey] = getStack(industryname, industry.itemId, f)
     end
-    stack = stacks[industryname]
+    stack = stacks[stackKey]
 
     if not (suppress_debug == 1) then system.print("Checking industry for " ..
         industryname .. " with stack size " .. stack.size .. " state: " .. state) end
@@ -290,7 +350,10 @@ for slot_name, slot in pairs(unit) do
             industry = {
                 id = slotId,
                 slot = slot,
-                name = adjustIndustryName(slot.getName())
+                name = adjustIndustryName(slot.getName()),
+                -- fix: the exact machine type as an item id (tier and size included). `name` above drops the tier,
+                -- so it cannot tell a Basic machine from an Uncommon one.
+                itemId = slot.getItemId()
             }
             industries[slotId] = industry
             -- table.insert(industries, industry)
